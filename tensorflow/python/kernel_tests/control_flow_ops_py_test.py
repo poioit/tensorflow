@@ -32,6 +32,7 @@ from tensorflow.core.protobuf import config_pb2
 from tensorflow.python.client import device_lib
 from tensorflow.python.client import session
 from tensorflow.python.eager import context
+from tensorflow.python.eager import def_function
 from tensorflow.python.eager import function as eager_function
 from tensorflow.python.eager import wrap_function
 from tensorflow.python.framework import constant_op
@@ -1079,7 +1080,7 @@ class ControlFlowTest(test.TestCase):
     with self.cached_session():
       v = variables.Variable(0.0)
       v.initializer.run()
-      increment = v.assign_add(1.0)
+      increment = v.assign_add(1.0).read_value()
 
       def body_fn(i):
         with ops.control_dependencies([increment]):
@@ -1096,7 +1097,8 @@ class ControlFlowTest(test.TestCase):
     with self.cached_session():
       v = variables.Variable(0.0)
       v.initializer.run()
-      increment = v.assign_add(1.0)
+      # TODO(apassos): figure out why the reading is necessary here.
+      increment = v.assign_add(1.0).read_value()
 
       def body_fn(unused_i):
         with ops.control_dependencies([increment]):
@@ -1181,6 +1183,8 @@ class ControlFlowTest(test.TestCase):
 
   @test_util.run_v1_only("b/120545219")
   def testInvalidMaximumIterationsWhileLoopGradientInXLAContext(self):
+    if control_flow_util.ENABLE_CONTROL_FLOW_V2:
+      self.skipTest("WhileV2 does lazy evaluation of maximum_iterations")
     v = constant_op.constant(1.0)
 
     def inner_body(i, x):
@@ -1201,44 +1205,27 @@ class ControlFlowTest(test.TestCase):
     gs = gradients_impl.gradients(loop_no_xla, v)
     self.evaluate(gs)  # This should execute without error.
 
-    if control_flow_util.ENABLE_CONTROL_FLOW_V2:
-      xla_context = control_flow_ops.XLAControlFlowContext()
-      xla_context.Enter()
-      with self.assertRaisesRegexp(
-          ValueError,
-          r"maximum_iterations is None. It is required and must be statically "
-          r"known \(e.g. a constant value or known shape dimension\) when "
-          r"building while_loop in XLA context."):
-        loop_no_maxiter = create_while_loop()
-      with self.assertRaisesRegexp(
-          ValueError,
-          r"maximum_iterations must be statically "
-          r"known \(e.g. a constant value or known shape dimension\) when "
-          r"building while_loop in XLA context."):
-        loop_with_maxiter = create_while_loop(maximum_iterations=2)
-      xla_context.Exit()
-    else:
-      xla_context = control_flow_ops.XLAControlFlowContext()
-      xla_context.Enter()
-      loop_no_maxiter = create_while_loop()
-      loop_with_maxiter = create_while_loop(maximum_iterations=2)
-      xla_context.Exit()
+    xla_context = control_flow_ops.XLAControlFlowContext()
+    xla_context.Enter()
+    loop_no_maxiter = create_while_loop()
+    loop_with_maxiter = create_while_loop(maximum_iterations=2)
+    xla_context.Exit()
 
-      with self.assertRaisesRegexp(
-          ValueError,
-          r"Cannot create a gradient accumulator for tensor '.+' inside "
-          r"XLA while_loop because maximum_iterations was not passed to "
-          r"the tf.while_loop call \('.+'\)."):
-        _ = gradients_impl.gradients(loop_no_maxiter, v)
+    with self.assertRaisesRegexp(
+        ValueError,
+        r"Cannot create a gradient accumulator for tensor '.+' inside "
+        r"XLA while_loop because maximum_iterations was not passed to "
+        r"the tf.while_loop call \('.+'\)."):
+      _ = gradients_impl.gradients(loop_no_maxiter, v)
 
-      with self.assertRaisesRegexp(
-          ValueError,
-          r"Cannot create a gradient accumulator for tensor '.+' inside XLA "
-          r"while_loop. maximum_iterations tensor '.+' for while_loop context "
-          r"'.+' must be statically known \(e.g. a constant value or known "
-          r"shape dimension\), or be defined at or outside the while loop "
-          r"context '.*' \(currently defined in '.*'\)"):
-        _ = gradients_impl.gradients(loop_with_maxiter, v)
+    with self.assertRaisesRegexp(
+        ValueError,
+        r"Cannot create a gradient accumulator for tensor '.+' inside XLA "
+        r"while_loop. maximum_iterations tensor '.+' for while_loop context "
+        r"'.+' must be statically known \(e.g. a constant value or known "
+        r"shape dimension\), or be defined at or outside the while loop "
+        r"context '.*' \(currently defined in '.*'\)"):
+      _ = gradients_impl.gradients(loop_with_maxiter, v)
 
   @test_util.run_v1_only("b/120545219")
   def testInvalidMaximumIterationsFromSiblingContextWhileLoopInXLAContext(self):
@@ -1263,10 +1250,7 @@ class ControlFlowTest(test.TestCase):
       xla_context = control_flow_ops.XLAControlFlowContext()
       xla_context.Enter()
       with self.assertRaisesRegexp(
-          ValueError,
-          r"maximum_iterations must be statically known \(e.g. a constant value"
-          r" or known shape dimension\) when building while_loop in XLA "
-          r"context."):
+          ValueError, r"Tensor.*Placeholder:0.* must be from the same graph.*"):
         loop = create_while_loop()
       xla_context.Exit()
     else:
@@ -2397,6 +2381,24 @@ class ControlFlowTest(test.TestCase):
       i_val, x_val = self.evaluate([i, x])
       self.assertEqual(i_val, 3)
       self.assertAllClose(x_val, 1.0)
+
+  @test_util.run_gpu_only
+  def testGpuResourceAccess(self):
+    with ops.device(test.gpu_device_name()):
+      var = resource_variable_ops.ResourceVariable(constant_op.constant(3.0))
+
+    @def_function.function
+    def foo():
+      return control_flow_ops.while_loop(
+          lambda i, _: i < 3,
+          lambda i, x: (i + 1, control_flow_ops.cond(
+              constant_op.constant(True),
+              lambda: x + var,
+              lambda: x)),
+          [0, 0.0])[1]
+
+    self.evaluate(variables.global_variables_initializer())
+    self.assertEqual(self.evaluate(foo()), 9.0)
 
   def testNestedResourceAccess(self):
     var = resource_variable_ops.ResourceVariable(constant_op.constant(3.0))

@@ -395,6 +395,178 @@ class CategoricalCrossentropy(Loss):
           y_true, y_pred, from_logits=self.from_logits)
 
 
+@keras_export('keras.losses.Hinge')
+class Hinge(Loss):
+  """Computes the hinge loss between `y_true` and `y_pred`.
+
+  Usage:
+
+  ```python
+  h = tf.losses.Hinge()
+  loss = h([0., 1., 1.], [1., 0., 1.])
+  print('Loss: ', loss.numpy())  # Loss: 0.66
+  ```
+
+  Usage with tf.keras API:
+
+  ```python
+  model = keras.models.Model(inputs, outputs)
+  model.compile('sgd', loss=tf.losses.Hinge())
+  ```
+  """
+
+  def call(self, y_true, y_pred):
+    """Calculates the hinge loss.
+
+    Args:
+      y_true: Ground truth values.
+      y_pred: The predicted values.
+
+    Returns:
+      Hinge loss.
+    """
+    y_pred = ops.convert_to_tensor(y_pred)
+    y_true = math_ops.cast(y_true, y_pred.dtype)
+    return hinge(y_true, y_pred)
+
+
+@keras_export('keras.losses.SquaredHinge')
+class SquaredHinge(Loss):
+  """Computes the squared hinge loss between `y_true` and `y_pred`.
+
+  Usage:
+
+  ```python
+  sh = tf.losses.SquaredHinge()
+  loss = sh([0., 1., 1.], [1., 0., 1.])
+  print('Loss: ', loss.numpy())  # Loss: 0.66
+  ```
+
+  Usage with tf.keras API:
+
+  ```python
+  model = keras.models.Model(inputs, outputs)
+  model.compile('sgd', loss=tf.losses.SquaredHinge())
+  ```
+  """
+
+  def call(self, y_true, y_pred):
+    """Calculates the squared hinge loss.
+
+    Args:
+      y_true: Ground truth values.
+      y_pred: The predicted values.
+
+    Returns:
+      Squared hinge loss.
+    """
+    y_pred = ops.convert_to_tensor(y_pred)
+    y_true = math_ops.cast(y_true, y_pred.dtype)
+    return squared_hinge(y_true, y_pred)
+
+
+@keras_export('keras.losses.CategoricalHinge')
+class CategoricalHinge(Loss):
+  """Computes the categorical hinge loss between `y_true` and `y_pred`.
+
+  Usage:
+
+  ```python
+  ch = tf.losses.CategoricalHinge()
+  loss = ch([0., 1., 1.], [1., 0., 1.])
+  print('Loss: ', loss.numpy())  # Loss: 1.0
+  ```
+
+  Usage with tf.keras API:
+
+  ```python
+  model = keras.models.Model(inputs, outputs)
+  model.compile('sgd', loss=tf.losses.CategoricalHinge())
+  ```
+  """
+
+  def call(self, y_true, y_pred):
+    """Calculates the categorical hinge loss.
+
+    Args:
+      y_true: Ground truth values.
+      y_pred: The predicted values.
+
+    Returns:
+      Categorical hinge loss.
+    """
+    y_pred = ops.convert_to_tensor(y_pred)
+    y_true = math_ops.cast(y_true, y_pred.dtype)
+    return categorical_hinge(y_true, y_pred)
+
+
+class LogLoss(Loss):
+  """Computes the log loss between `y_true` and `y_pred`.
+
+  logloss = - y_true * log(y_pred) - (1 - y_true) * log(1 - y_pred)
+
+  Usage:
+
+  ```python
+  l = tf.losses.LogLoss()
+  loss = l([0., 1., 1.], [1., 0., 1.])
+  print('Loss: ', loss.numpy())  # Loss: 10.745
+  ```
+
+  Usage with tf.keras API:
+
+  ```python
+  model = keras.models.Model(inputs, outputs)
+  model.compile('sgd', loss=tf.losses.LogLoss())
+  ```
+
+  Args:
+    epsilon: A small increment to add to avoid taking a log of zero.
+    reduction: Type of `tf.losses.Reduction` to apply to loss. Default value is
+      `SUM_OVER_BATCH_SIZE`.
+    name: Optional name for the op.
+  """
+
+  def __init__(self,
+               epsilon=1e-7,
+               reduction=losses_impl.ReductionV2.SUM_OVER_BATCH_SIZE,
+               name=None):
+    super(LogLoss, self).__init__(reduction=reduction, name=name)
+    self.epsilon = epsilon
+
+  def call(self, y_true, y_pred):
+    y_pred = ops.convert_to_tensor(y_pred)
+    y_true = math_ops.cast(y_true, y_pred.dtype)
+    return logloss(y_true, y_pred, epsilon=self.epsilon)
+
+
+class Logcosh(Loss):
+  """Computes the logarithm of the hyperbolic cosine of the prediction error.
+
+  logcosh = log((exp(x) + exp(-x))/2) where x is the error `y_pred` - `y_true`.
+
+  Usage:
+
+  ```python
+  l = tf.losses.Logcosh()
+  loss = l([0., 1., 1.], [1., 0., 1.])
+  print('Loss: ', loss.numpy())  # Loss: 0.289
+  ```
+
+  Usage with tf.keras API:
+
+  ```python
+  model = keras.models.Model(inputs, outputs)
+  model.compile('sgd', loss=tf.losses.Logcosh())
+  ```
+  """
+
+  def call(self, y_true, y_pred):
+    y_pred = ops.convert_to_tensor(y_pred)
+    y_true = math_ops.cast(y_true, y_pred.dtype)
+    return logcosh(y_true, y_pred)
+
+
 @keras_export('keras.metrics.mean_squared_error',
               'keras.metrics.mse',
               'keras.metrics.MSE',
@@ -455,6 +627,12 @@ def categorical_hinge(y_true, y_pred):
   pos = math_ops.reduce_sum(y_true * y_pred, axis=-1)
   neg = math_ops.reduce_max((1. - y_true) * y_pred, axis=-1)
   return math_ops.maximum(0., neg - pos + 1.)
+
+
+def logloss(y_true, y_pred, epsilon=1e-7):
+  losses = math_ops.multiply(y_true, math_ops.log(y_pred + epsilon))
+  losses += math_ops.multiply((1 - y_true), math_ops.log(1 - y_pred + epsilon))
+  return K.mean(-losses, axis=-1)
 
 
 @keras_export('keras.losses.logcosh')
@@ -527,6 +705,7 @@ def cosine_proximity(y_true, y_pred):
   return -math_ops.reduce_sum(y_true * y_pred, axis=-1)
 
 
+@keras_export('keras.losses.CosineProximity')
 class CosineProximity(Loss):
   """Computes the cosine distance between `y_true` and `y_pred`.
 

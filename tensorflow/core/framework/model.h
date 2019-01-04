@@ -310,7 +310,7 @@ class Node {
   std::map<string, std::shared_ptr<Parameter>> parameters_ GUARDED_BY(mu_);
   std::list<std::shared_ptr<Node>> inputs_ GUARDED_BY(mu_);
 
-  // The reference to the output node is not owned so that that deletion of a
+  // The reference to the output node is not owned so that deletion of a
   // node results in recursive deletion of the subtree rooted in the node.
   Node* const output_;
 };
@@ -365,8 +365,10 @@ class Model {
   bool collect_resource_usage() const { return collect_resource_usage_; }
 
   // Adds a node with the given name and given output.
-  std::shared_ptr<Node> AddNode(Node::Factory factory, const string& name,
-                                const string& output_name) LOCKS_EXCLUDED(mu_);
+  virtual std::shared_ptr<Node> AddNode(Node::Factory factory,
+                                        const string& name,
+                                        const string& output_name)
+      LOCKS_EXCLUDED(mu_);
 
   // Increments the processing time for the given node..
   void AddProcessingTime(const string& name, int64 delta) LOCKS_EXCLUDED(mu_);
@@ -388,7 +390,7 @@ class Model {
   // Removes the given node.
   void RemoveNode(const string& name) LOCKS_EXCLUDED(mu_);
 
- private:
+ protected:
   // Collects tunable parameters in the tree rooted in the given node.
   std::vector<std::shared_ptr<Parameter>> CollectTunableParameters(
       std::shared_ptr<Node> node);

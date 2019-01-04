@@ -27,6 +27,7 @@ from tensorflow.python import pywrap_tensorflow
 from tensorflow.python.distribute import cross_device_ops as cross_device_ops_lib
 from tensorflow.python.distribute import device_util
 from tensorflow.python.distribute import distribute_lib
+from tensorflow.python.distribute import input_lib
 from tensorflow.python.distribute import multi_worker_util
 from tensorflow.python.distribute import reduce_util
 from tensorflow.python.distribute import shared_variable_creator
@@ -193,8 +194,8 @@ def _call_for_each_replica(distribution, device_map, fn, args, kwargs):
   return values.regroup(device_map, tuple(t.main_result for t in threads))
 
 
-def _create_mirrored_variable(device_map, logical_device, real_mirrored_creator,
-                              *args, **kwargs):  # pylint: disable=g-missing-docstring
+def _create_mirrored_variable(strategy, device_map, logical_device,  # pylint: disable=missing-docstring
+                              real_mirrored_creator, *args, **kwargs):
   # Figure out what collections this variable should be added to.
   # We'll add the MirroredVariable to those collections instead.
   collections = kwargs.pop("collections", None)
@@ -245,11 +246,13 @@ def _create_mirrored_variable(device_map, logical_device, real_mirrored_creator,
     value_list = real_mirrored_creator(devices, *args, **kwargs)
 
     if is_replica_local:
-      result = values.ReplicaLocalVariable(device_map, value_list, aggregation,
-                                           logical_device=logical_device)
+      result = values.ReplicaLocalVariable(
+          strategy, device_map, value_list, aggregation,
+          logical_device=logical_device)
     else:
-      result = values.MirroredVariable(device_map, value_list, aggregation,
-                                       logical_device=logical_device)
+      result = values.MirroredVariable(
+          strategy, device_map, value_list, aggregation,
+          logical_device=logical_device)
 
   # Add the wrapped variable to the requested collections.
   # The handling of eager mode and the global step matches
@@ -454,7 +457,7 @@ class MirroredExtended(distribute_lib.DistributionStrategyExtended):
         "No duplicates allowed in `devices` argument: %s" % devices)
     # TODO(josh11b): Require at least 2 devices?
     self._device_map = values.ReplicaDeviceMap(devices)
-    self._input_workers = values.InputWorkers(self._device_map)
+    self._input_workers = input_lib.InputWorkers(self._device_map)
     self._inferred_cross_device_ops = cross_device_ops_lib.choose_the_best(
         devices)
 
@@ -487,7 +490,8 @@ class MirroredExtended(distribute_lib.DistributionStrategyExtended):
     self._default_device = workers[0]
 
     self._device_map = values.ReplicaDeviceMap(devices)
-    self._input_workers = values.InputWorkers(self._device_map, worker_devices)
+    self._input_workers = input_lib.InputWorkers(
+        self._device_map, worker_devices)
     self._inferred_cross_device_ops = cross_device_ops_lib.MultiWorkerAllReduce(
         workers, _infer_num_gpus_per_worker(devices))
 
@@ -531,22 +535,26 @@ class MirroredExtended(distribute_lib.DistributionStrategyExtended):
           value_list.append(v)
       return value_list
 
-    return _create_mirrored_variable(device_map, logical_device,
-                                     _real_mirrored_creator, *args, **kwargs)
+    return _create_mirrored_variable(
+        self._container_strategy(), device_map, logical_device,
+        _real_mirrored_creator, *args, **kwargs)
+
+  def _validate_colocate_with_variable(self, colocate_with_variable):
+    values.validate_colocate_distributed_variable(colocate_with_variable, self)
 
   def _distribute_dataset(self, dataset_fn):
     if self._local_mode:
       worker_index = 0
-      return values.PerReplicaDataset(
+      return input_lib.PerReplicaDataset(
           self._call_dataset_fn(dataset_fn), self._input_workers, worker_index)
     else:
-      return values.MultiWorkerDataset(
+      return input_lib.MultiWorkerDataset(
           functools.partial(self._call_dataset_fn, dataset_fn),
           self._input_workers,
           auto_shard=False)
 
   def _make_dataset_iterator(self, dataset):
-    return values.DatasetIterator(
+    return input_lib.DatasetIterator(
         dataset, self._input_workers, self._num_replicas_in_sync)
 
   def _make_input_fn_iterator(
@@ -560,7 +568,7 @@ class MirroredExtended(distribute_lib.DistributionStrategyExtended):
           num_input_pipelines=num_workers,
           input_pipeline_id=i,
           num_replicas_in_sync=self._num_replicas_in_sync))
-    return values.InputFunctionIterator(
+    return input_lib.InputFunctionIterator(
         input_fn, self._input_workers, input_contexts)
 
   # TODO(priyag): Deal with OutOfRange errors once b/111349762 is fixed.
@@ -570,7 +578,7 @@ class MirroredExtended(distribute_lib.DistributionStrategyExtended):
       initial_loop_values = {}
     initial_loop_values = nest.flatten(initial_loop_values)
 
-    ctx = values.MultiStepContext()
+    ctx = input_lib.MultiStepContext()
     def body(i, *args):
       """A wrapper around `fn` to create the while loop body."""
       del args
@@ -886,5 +894,4 @@ class MirroredReplicaContext(distribute_lib.ReplicaContext):
   def devices(self):
     distribute_lib.require_replica_context(self)
     replica_id = tensor_util.constant_value(self._replica_id_in_sync_group)
-    extended = self._distribution_strategy.extended
-    return extended.worker_devices_by_replica[replica_id]
+    return [self._strategy.extended.worker_devices_by_replica[replica_id]]

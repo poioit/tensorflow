@@ -23,6 +23,7 @@ import sys
 
 from tensorflow.python.client import session as session_lib
 from tensorflow.python.eager import backprop
+from tensorflow.python.eager import function
 from tensorflow.python.eager import def_function
 from tensorflow.python.eager import test
 from tensorflow.python.framework import constant_op
@@ -30,6 +31,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import test_util
+from tensorflow.python.keras.engine import training
 from tensorflow.python.keras.layers import core
 from tensorflow.python.lib.io import file_io
 from tensorflow.python.ops import lookup_ops
@@ -39,7 +41,7 @@ from tensorflow.python.saved_model import loader
 from tensorflow.python.saved_model import save
 from tensorflow.python.saved_model import signature_constants
 from tensorflow.python.saved_model import tag_constants
-from tensorflow.python.training import adam
+from tensorflow.python.keras.optimizer_v2 import adam
 from tensorflow.python.training.checkpointable import tracking
 from tensorflow.python.training.checkpointable import util
 
@@ -48,7 +50,7 @@ class _ModelWithOptimizer(util.Checkpoint):
 
   def __init__(self):
     self.dense = core.Dense(1)
-    self.optimizer = adam.AdamOptimizer(0.01)
+    self.optimizer = adam.Adam(0.01)
 
   @def_function.function(
       input_signature=(tensor_spec.TensorSpec([None, 2], dtypes.float32),
@@ -305,6 +307,30 @@ class SaveTest(test.TestCase):
       self.assertNotIn("T", complex_node.attr)
       self.assertNotIn("Tout", complex_node.attr)
 
+  def test_subclassed_no_signature(self):
+
+    class Subclassed(training.Model):
+
+      def call(self, inputs):
+        return inputs * 2.
+
+    save_dir = os.path.join(self.get_temp_dir(), "saved_model")
+    model = Subclassed()
+    with self.assertRaisesRegexp(
+        ValueError, "no @tf.function-decorated methods"):
+      save.save(model, save_dir)
+
+    traced_call = def_function.function(
+        model.call,
+        input_signature=(tensor_spec.TensorSpec(
+            (None, None),
+            dtype=dtypes.float32),))
+    save.save(model, save_dir, traced_call)
+    self.assertAllClose({"output_0": [[8., 10.], [10., 12.]]},
+                        _import_and_infer(
+                            save_dir,
+                            {"inputs": [[4., 5.], [5., 6.]]}))
+
 
 class AssetTests(test.TestCase):
 
@@ -371,10 +397,32 @@ class AssetTests(test.TestCase):
         save.save(root, export_dir)
 
 
+class _ModelWithOptimizerUsingDefun(util.Checkpoint):
+
+  def __init__(self):
+    self.dense = core.Dense(1)
+    self.optimizer = adam.Adam(0.01)
+
+  # Using defun due to control flow v2 cycles, b/121159261. def_function uses
+  # conds to gate variable initialization and so triggers cond reference cycles,
+  # but the thing being wrapped here does not use cond itself.
+  @function.defun(
+      input_signature=(tensor_spec.TensorSpec([None, 2], dtypes.float32),
+                       tensor_spec.TensorSpec([None], dtypes.float32)),
+  )
+  def call(self, x, y):
+    with backprop.GradientTape() as tape:
+      loss = math_ops.reduce_mean((self.dense(x) - y) ** 2.)
+    trainable_variables = self.dense.trainable_variables
+    gradients = tape.gradient(loss, trainable_variables)
+    self.optimizer.apply_gradients(zip(gradients, trainable_variables))
+    return {"loss": loss}
+
+
 class MemoryTests(test.TestCase):
 
   def setUp(self):
-    self._model = _ModelWithOptimizer()
+    self._model = _ModelWithOptimizerUsingDefun()
 
   @test_util.assert_no_garbage_created
   def test_no_reference_cycles(self):

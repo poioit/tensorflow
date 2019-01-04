@@ -221,11 +221,13 @@ class MirroredStrategyVariableCreationTest(test.TestCase):
 
   # TODO(priyag): Modify more tests to use this helper and check more
   # properties.
-  def _test_mv_properties(self, var, name):
+  def _test_mv_properties(self, var, name, strategy):
     self.assertIsInstance(var, values.MirroredVariable)
     self.assertEqual(name, var.name)
+    self.assertIs(strategy, var.distribute_strategy)
     for d in var.devices:
       self.assertEqual(d, var.get(d).device)
+      self.assertIs(strategy, var.get(d).distribute_strategy)
 
   def testVariableInFuncGraph(self, distribution):
     def model_fn():
@@ -237,8 +239,8 @@ class MirroredStrategyVariableCreationTest(test.TestCase):
       v1 = variable_scope.variable(1.0, name="foo")
       v2 = distribution.extended.call_for_each_replica(model_fn)
 
-    self._test_mv_properties(v1, "foo:0")
-    self._test_mv_properties(v2, "bar:0")
+    self._test_mv_properties(v1, "foo:0", distribution)
+    self._test_mv_properties(v2, "bar:0", distribution)
 
   def testSingleVariable(self, distribution):
     def model_fn():
@@ -251,7 +253,7 @@ class MirroredStrategyVariableCreationTest(test.TestCase):
 
     with distribution.scope():
       result = distribution.extended.call_for_each_replica(model_fn)
-      self._test_mv_properties(result, "foo:0")
+      self._test_mv_properties(result, "foo:0", distribution)
 
   def testUnnamedVariable(self, distribution):
     def model_fn():
@@ -261,7 +263,7 @@ class MirroredStrategyVariableCreationTest(test.TestCase):
 
     with distribution.scope():
       result = distribution.extended.call_for_each_replica(model_fn)
-      self._test_mv_properties(result, "Variable:0")
+      self._test_mv_properties(result, "Variable:0", distribution)
 
   def testMultipleVariables(self, distribution):
     def model_fn():
@@ -274,7 +276,7 @@ class MirroredStrategyVariableCreationTest(test.TestCase):
     with distribution.scope():
       result = distribution.extended.call_for_each_replica(model_fn)
       for i, v in enumerate(result):
-        self._test_mv_properties(v, "foo" + str(i) + ":0")
+        self._test_mv_properties(v, "foo" + str(i) + ":0", distribution)
 
   def testMultipleVariablesWithSameCanonicalName(self, distribution):
     def model_fn():
@@ -692,6 +694,15 @@ class MirroredStrategyVariableCreationTest(test.TestCase):
       self.assertEqual(5.0, self.evaluate(ret_v_sum.get(
           distribution.extended.worker_devices[0]).read_value()))
       self.assertEqual(10.0, self.evaluate(ret_v_sum))
+
+  def testVarDistributeStrategy(self, distribution):
+    with distribution.scope():
+      mirrored = variable_scope.variable(1.0)
+      replica_local = variable_scope.variable(
+          1.0,
+          synchronization=variable_scope.VariableSynchronization.ON_READ)
+      self.assertIs(distribution, mirrored.distribute_strategy)
+      self.assertIs(distribution, replica_local.distribute_strategy)
 
 
 @combinations.generate(combinations.combine(

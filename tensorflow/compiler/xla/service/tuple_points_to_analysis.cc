@@ -19,6 +19,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_set.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -55,11 +56,10 @@ bool PointsToSet::IsAmbiguous() const {
 
 bool PointsToSet::IsDistinct() const {
   bool distinct = true;
-  std::set<const LogicalBuffer*> all_points_to;
-  ForEachElement([&distinct, &all_points_to](const ShapeIndex& /*index*/,
-                                             const BufferList& points_to) {
+  absl::flat_hash_set<const LogicalBuffer*> all_points_to;
+  ForEachElement([&](const ShapeIndex& /*index*/, const BufferList& points_to) {
     for (auto& buffer : points_to) {
-      if (all_points_to.count(buffer) != 0) {
+      if (all_points_to.contains(buffer)) {
         distinct = false;
       }
       all_points_to.insert(buffer);
@@ -210,7 +210,7 @@ Status TuplePointsToAnalysis::DefaultAction(HloInstruction* hlo_instruction) {
             &logical_buffer_analysis_->GetBuffer(hlo_instruction, index));
       });
 
-  if (ShapeUtil::IsTuple(hlo_instruction->shape())) {
+  if (hlo_instruction->shape().IsTuple()) {
     // If the hlo instruction is a tuple-shaped, then trivially the instruction
     // itself is the source of the tuple.
     points_to_set.add_tuple_source({}, hlo_instruction);

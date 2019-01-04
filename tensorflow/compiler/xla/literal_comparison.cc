@@ -172,14 +172,14 @@ Status Equal(LiteralSlice expected, LiteralSlice actual,
 // Gets the total element count.  For tuples, this is not the count of tuple
 // elements, but the sum of elements of each tuple element.
 int64 RecursiveElementCount(const Shape& shape) {
-  if (ShapeUtil::IsTuple(shape)) {
+  if (shape.IsTuple()) {
     const int64 tuple_elements = ShapeUtil::TupleElementCount(shape);
     int64 total = 0;
     for (int64 i = 0; i < tuple_elements; ++i) {
       total += RecursiveElementCount(ShapeUtil::GetTupleElementShape(shape, i));
     }
     return total;
-  } else if (ShapeUtil::IsArray(shape)) {
+  } else if (shape.IsArray()) {
     return ShapeUtil::ElementsIn(shape);
   } else {
     return 0;
@@ -311,7 +311,7 @@ class NearComparator {
     // If the shapes mismatch, we simply fail the expectation instead of
     // printing out data, as it's a type error rather than a value error.
     TF_RETURN_IF_ERROR(EqualShapes(expected_.shape(), actual_.shape()));
-    if (!ShapeUtil::IsArray(expected_.shape())) {
+    if (!expected_.shape().IsArray()) {
       return InvalidArgument("Expected array shape; got %s.",
                              ShapeUtil::HumanString(expected_.shape()));
     }
@@ -387,7 +387,14 @@ class NearComparator {
       rel_error = std::numeric_limits<float>::infinity();
     } else {
       abs_error = FpAbsoluteValue(actual - expected);
-      rel_error = abs_error / FpAbsoluteValue(expected);
+
+      // Avoid division by 0 even though it's well-defined because ubsan can be
+      // configured to treat this as a fatal error.
+      if (expected != T{0}) {
+        rel_error = abs_error / FpAbsoluteValue(expected);
+      } else {
+        rel_error = std::numeric_limits<float>::infinity();
+      }
     }
     const bool is_abs_mismatch = abs_error > error_.abs;
     const bool is_rel_mismatch = rel_error > error_.rel;
@@ -463,7 +470,7 @@ class NearComparator {
       }
       return;
     }
-    std::vector<int64> multi_index(ShapeUtil::Rank(actual_.shape()), 0);
+    std::vector<int64> multi_index(actual_.shape().rank(), 0);
     CompareLiteralsSlow(0, &multi_index);
   }
 
@@ -685,7 +692,7 @@ Status NearHelper(const LiteralSlice& expected, const LiteralSlice& actual,
                   const ShapeIndex& shape_index) {
   TF_RETURN_IF_ERROR(EqualShapes(expected.shape(), actual.shape()));
 
-  if (ShapeUtil::IsTuple(expected.shape())) {
+  if (expected.shape().IsTuple()) {
     Status return_status;
     for (int64 i = 0; i < ShapeUtil::TupleElementCount(expected.shape()); ++i) {
       const auto expected_element = LiteralSlice(expected, {i});
@@ -761,7 +768,7 @@ Status EqualShapes(const Shape& expected, const Shape& actual) {
                            ShapeUtil::HumanString(expected),
                            ShapeUtil::HumanString(actual));
   }
-  if (ShapeUtil::IsTuple(expected)) {
+  if (expected.IsTuple()) {
     if (ShapeUtil::TupleElementCount(expected) !=
         ShapeUtil::TupleElementCount(actual)) {
       return InvalidArgument(
@@ -776,8 +783,8 @@ Status EqualShapes(const Shape& expected, const Shape& actual) {
         return AppendStatus(result, StrCat("mismatch in tuple index", i));
       }
     }
-  } else if (ShapeUtil::IsArray(expected)) {
-    if (ShapeUtil::Rank(expected) != ShapeUtil::Rank(actual)) {
+  } else if (expected.IsArray()) {
+    if (expected.rank() != actual.rank()) {
       return InvalidArgument("want rank of %s got rank of %s",
                              ShapeUtil::HumanString(expected),
                              ShapeUtil::HumanString(actual));

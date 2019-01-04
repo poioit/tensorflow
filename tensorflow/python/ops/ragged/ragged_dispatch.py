@@ -392,12 +392,13 @@ _V1_OPS_THAT_DELEGATE_TO_V2_OPS = [
 
 
 def _ragged_gather_v1(params, indices, validate_indices=None, name=None,
-                      axis=0):
+                      axis=0, batch_dims=0):
   return ragged_array_ops.gather(
       params=params,
       indices=indices,
       validate_indices=validate_indices,
       axis=axis,
+      batch_dims=batch_dims,
       name=name)
 
 
@@ -417,6 +418,7 @@ _RAGGED_DISPATCH_OPS = [
     (array_ops.gather, _ragged_gather_v1, ['params', 'indices']),
     (array_ops.gather_v2, ragged_array_ops.gather, ['params', 'indices']),
     (array_ops.gather_nd, ragged_array_ops.gather_nd, ['params', 'indices']),
+    (array_ops.rank, ragged_array_ops.rank, ['input']),
     (array_ops.stack, ragged_array_ops.stack, ['[values]']),
     (array_ops.tile, ragged_array_ops.tile, ['input']),
     (array_ops.where, ragged_array_ops.where, ['condition', 'x', 'y']),

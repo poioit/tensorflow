@@ -276,7 +276,22 @@ class XlaBuilder {
                            int64 target_param_num,
                            ShapeIndex target_param_index, int64 target_dim_num);
 
+  // Adds a new input/output alias. Since the input/ouput shape information are
+  // not available until the computation is built, and eventual error in the
+  // arguments of this API will be detected only at computation Build() time.
+  void SetUpAlias(const ShapeIndex& output_index, int64 param_number,
+                  const ShapeIndex& param_index) {
+    input_output_aliases_.push_back({output_index, param_number, param_index});
+  }
+
  private:
+  // Describes an input/output alias as inserted by the SetUpAlias() API.
+  struct InputOutputAlias {
+    ShapeIndex output_index;
+    int64 param_number;
+    ShapeIndex param_index;
+  };
+
   // Build helper which takes the id of the root operation..
   StatusOr<XlaComputation> Build(int64 root_id);
 
@@ -712,7 +727,8 @@ class XlaBuilder {
   // operation such as `RngNormal` or `Infeed`. The visitor walks the
   // computation starting at a given operation and sets is_constant to false iff
   // a parameter or stateful operation is encountered.
-  void IsConstantVisitor(const int64 op_handle, std::set<int64>* visited,
+  void IsConstantVisitor(const int64 op_handle,
+                         absl::flat_hash_set<int64>* visited,
                          bool* is_constant) const;
 
   // Checks bounds for convolution parameters.
@@ -729,6 +745,12 @@ class XlaBuilder {
                               absl::Span<const int64> rhs_dilation) const;
 
   int64 GetNextId() { return ++next_id_; }
+
+  // Populates the module with the input/output alias information stored within
+  // the input_output_aliases vector.
+  static Status PopulateInputOutputAlias(
+      HloModuleProto* module, const ProgramShape& program_shape,
+      const std::vector<InputOutputAlias>& input_output_aliases);
 
   string name_;  // Name to use for the built computation.
 
@@ -748,6 +770,9 @@ class XlaBuilder {
 
   // Dynamic parameter configuration of this computation.
   DynamicParameterBinding dynamic_parameter_binding_;
+
+  // Holds the input/output alias information populated by the SetUpAlias() API.
+  std::vector<InputOutputAlias> input_output_aliases_;
 
   // A map from XlaOp::Handle to the index in the instructions_ vector where the
   // instruction is held.

@@ -33,6 +33,7 @@ from tensorflow.python.keras.engine.training import Model
 from tensorflow.python.keras.utils import layer_utils
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training.checkpointable import base as checkpointable
+from tensorflow.python.util import nest
 from tensorflow.python.util import tf_inspect
 from tensorflow.python.util.tf_export import keras_export
 
@@ -150,7 +151,7 @@ class Sequential(Model):
     if not self._layers:
       if isinstance(layer, InputLayer):
         # Corner case where the user passes an InputLayer layer via `add`.
-        assert len(layer._inbound_nodes[-1].output_tensors) == 1
+        assert len(nest.flatten(layer._inbound_nodes[-1].output_tensors)) == 1
         set_inputs = True
       else:
         batch_shape, dtype = training_utils.get_input_shape_and_dtype(layer)
@@ -168,12 +169,14 @@ class Sequential(Model):
 
       if set_inputs:
         # If an input layer (placeholder) is available.
-        if len(layer._inbound_nodes[-1].output_tensors) != 1:
+        if len(nest.flatten(layer._inbound_nodes[-1].output_tensors)) != 1:
           raise ValueError('All layers in a Sequential model '
                            'should have a single output tensor. '
                            'For multi-output layers, '
                            'use the functional API.')
-        self.outputs = [layer._inbound_nodes[-1].output_tensors[0]]
+        self.outputs = [
+            nest.flatten(layer._inbound_nodes[-1].output_tensors)[0]
+        ]
         self.inputs = layer_utils.get_source_inputs(self.outputs[0])
 
     elif self.outputs:
@@ -259,16 +262,17 @@ class Sequential(Model):
           with ops.name_scope(layer._name_scope()):
             layer._maybe_build(x)
           layer.built = True
+        if layer.supports_masking:
+          mask = layer.compute_mask(x, mask)
+        else:
+          mask = None
+
         if context.executing_eagerly():
           x = layer(x, **kwargs)
         elif layer.dynamic:
           x = layer._symbolic_call(x)
         else:
           x = layer.call(x, **kwargs)
-        if layer.supports_masking:
-          mask = layer.compute_mask(x, mask)
-        else:
-          mask = None
       if not context.executing_eagerly():
         x._keras_mask = mask
     return x, mask

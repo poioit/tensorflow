@@ -2,7 +2,6 @@ licenses(["restricted"])
 
 load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda_is_configured")
 load("//tensorflow/core:platform/default/build_config.bzl", "tf_proto_library")
-load("//tensorflow/core:platform/default/build_config.bzl", "tf_additional_all_protos")
 load("//tensorflow/core:platform/default/build_config_root.bzl", "if_static")
 load("//tensorflow:tensorflow.bzl", "cc_header_only_library")
 
@@ -20,7 +19,6 @@ tf_proto_library(
     srcs = ["dnn.proto"],
     cc_api_version = 2,
     default_header = True,
-    protodeps = tf_additional_all_protos(),
 )
 
 tf_proto_library(
@@ -28,7 +26,7 @@ tf_proto_library(
     srcs = ["logging.proto"],
     cc_api_version = 2,
     default_header = True,
-    protodeps = tf_additional_all_protos(),
+    protodeps = [":dnn_proto"],
 )
 
 cc_library(
@@ -54,7 +52,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":dnn_proto_cc_impl",
+        ":logging_proto_cc_impl",
         "//tensorflow/core:lib",
+        "//tensorflow/core:logger",
         "//tensorflow/core:ptr_util",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/strings",
@@ -71,6 +71,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":dnn_proto_cc",
+        ":logging_proto_cc",
         "//tensorflow/core:lib",
         "//tensorflow/core:ptr_util",
         "@com_google_absl//absl/strings",
@@ -103,6 +104,9 @@ cc_library(
         "//tensorflow:windows": ["/DNOGDI"],
         "//conditions:default": [],
     }),
+    data = [
+        "@local_config_cuda//cuda:cudnn",
+    ],
     linkopts = select({
         "//tensorflow:freebsd": [],
         "//tensorflow:windows": [],
@@ -117,7 +121,6 @@ cc_library(
     ] + if_cuda_is_configured([
         "//tensorflow/core:cuda",
         "@local_config_cuda//cuda:cuda_driver",
-        "@local_config_cuda//cuda:cudnn",
     ]),
     alwayslink = 1,
 )

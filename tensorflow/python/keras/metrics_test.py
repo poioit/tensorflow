@@ -18,6 +18,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import math
 import os
 from absl.testing import parameterized
 import numpy as np
@@ -75,6 +76,13 @@ class KerasMeanTest(test.TestCase):
     m.reset_states()
     self.assertEqual(self.evaluate(m.total), 0)
     self.assertEqual(self.evaluate(m.count), 0)
+
+    # Check save and restore config
+    m2 = metrics.Mean.from_config(m.get_config())
+    self.assertEqual(m2.name, 'my_mean')
+    self.assertTrue(m2.stateful)
+    self.assertEqual(m2.dtype, dtypes.float32)
+    self.assertEqual(len(m2.variables), 2)
 
   def test_mean_with_sample_weight(self):
     m = metrics.Mean(dtype=dtypes.float64)
@@ -189,6 +197,13 @@ class KerasAccuracyTest(test.TestCase):
     result = self.evaluate(acc_obj.result())
     self.assertEqual(result, 1)  # 2/2
 
+    # Check save and restore config
+    a2 = metrics.Accuracy.from_config(acc_obj.get_config())
+    self.assertEqual(a2.name, 'my acc')
+    self.assertTrue(a2.stateful)
+    self.assertEqual(len(a2.variables), 2)
+    self.assertEqual(a2.dtype, dtypes.float32)
+
     # check with sample_weight
     result_t = acc_obj([[2], [1]], [[2], [0]], sample_weight=[[0.5], [0.2]])
     result = self.evaluate(result_t)
@@ -279,11 +294,46 @@ class KerasAccuracyTest(test.TestCase):
     result = self.evaluate(result_t)
     self.assertAlmostEqual(result, 0.93, 2)  # 2.5/2.7
 
-  def test_assert_thresholds_range(self):
-    with self.assertRaisesRegexp(
-        ValueError,
-        r'Threshold values must be in \[0, 1\]. Invalid values: \[None\]'):
-      metrics._assert_thresholds_range([None, 0.5])
+  def test_sparse_categorical_accuracy_mismatched_dims(self):
+    acc_obj = metrics.SparseCategoricalAccuracy(name='my acc')
+
+    # check config
+    self.assertEqual(acc_obj.name, 'my acc')
+    self.assertTrue(acc_obj.stateful)
+    self.assertEqual(len(acc_obj.variables), 2)
+    self.assertEqual(acc_obj.dtype, dtypes.float32)
+    self.evaluate(variables.variables_initializer(acc_obj.variables))
+
+    # verify that correct value is returned
+    update_op = acc_obj.update_state([2, 1], [[0.1, 0.1, 0.8], [0.05, 0.95, 0]])
+    self.evaluate(update_op)
+    result = self.evaluate(acc_obj.result())
+    self.assertEqual(result, 1)  # 2/2
+
+    # check with sample_weight
+    result_t = acc_obj([2, 1], [[0.1, 0.1, 0.8], [0.05, 0, 0.95]],
+                       [[0.5], [0.2]])
+    result = self.evaluate(result_t)
+    self.assertAlmostEqual(result, 0.93, 2)  # 2.5/2.7
+
+  def test_sparse_categorical_accuracy_mismatched_dims_dynamic(self):
+    with context.graph_mode(), self.cached_session() as sess:
+      acc_obj = metrics.SparseCategoricalAccuracy(name='my acc')
+      self.evaluate(variables.variables_initializer(acc_obj.variables))
+
+      t = array_ops.placeholder(dtypes.float32)
+      p = array_ops.placeholder(dtypes.float32)
+      w = array_ops.placeholder(dtypes.float32)
+
+      result_t = acc_obj(t, p, w)
+      result = sess.run(
+          result_t,
+          feed_dict=({
+              t: [2, 1],
+              p: [[0.1, 0.1, 0.8], [0.05, 0, 0.95]],
+              w: [[0.5], [0.2]]
+          }))
+      self.assertAlmostEqual(result, 0.71, 2)  # 2.5/2.7
 
 
 @test_util.run_all_in_graph_and_eager_modes
@@ -294,6 +344,12 @@ class FalsePositivesTest(test.TestCase):
     self.assertEqual(fp_obj.name, 'my_fp')
     self.assertEqual(len(fp_obj.variables), 1)
     self.assertEqual(fp_obj.thresholds, [0.4, 0.9])
+
+    # Check save and restore config
+    fp_obj2 = metrics.FalsePositives.from_config(fp_obj.get_config())
+    self.assertEqual(fp_obj2.name, 'my_fp')
+    self.assertEqual(len(fp_obj2.variables), 1)
+    self.assertEqual(fp_obj2.thresholds, [0.4, 0.9])
 
   def test_unweighted(self):
     fp_obj = metrics.FalsePositives()
@@ -354,6 +410,11 @@ class FalsePositivesTest(test.TestCase):
         r'Threshold values must be in \[0, 1\]. Invalid values: \[-1, 2\]'):
       metrics.FalsePositives(thresholds=[-1, 0.5, 2])
 
+    with self.assertRaisesRegexp(
+        ValueError,
+        r'Threshold values must be in \[0, 1\]. Invalid values: \[None\]'):
+      metrics.FalsePositives(thresholds=[None])
+
 
 @test_util.run_all_in_graph_and_eager_modes
 class FalseNegativesTest(test.TestCase):
@@ -363,6 +424,12 @@ class FalseNegativesTest(test.TestCase):
     self.assertEqual(fn_obj.name, 'my_fn')
     self.assertEqual(len(fn_obj.variables), 1)
     self.assertEqual(fn_obj.thresholds, [0.4, 0.9])
+
+    # Check save and restore config
+    fn_obj2 = metrics.FalseNegatives.from_config(fn_obj.get_config())
+    self.assertEqual(fn_obj2.name, 'my_fn')
+    self.assertEqual(len(fn_obj2.variables), 1)
+    self.assertEqual(fn_obj2.thresholds, [0.4, 0.9])
 
   def test_unweighted(self):
     fn_obj = metrics.FalseNegatives()
@@ -426,6 +493,12 @@ class TrueNegativesTest(test.TestCase):
     self.assertEqual(len(tn_obj.variables), 1)
     self.assertEqual(tn_obj.thresholds, [0.4, 0.9])
 
+    # Check save and restore config
+    tn_obj2 = metrics.TrueNegatives.from_config(tn_obj.get_config())
+    self.assertEqual(tn_obj2.name, 'my_tn')
+    self.assertEqual(len(tn_obj2.variables), 1)
+    self.assertEqual(tn_obj2.thresholds, [0.4, 0.9])
+
   def test_unweighted(self):
     tn_obj = metrics.TrueNegatives()
     self.evaluate(variables.variables_initializer(tn_obj.variables))
@@ -487,6 +560,12 @@ class TruePositivesTest(test.TestCase):
     self.assertEqual(tp_obj.name, 'my_tp')
     self.assertEqual(len(tp_obj.variables), 1)
     self.assertEqual(tp_obj.thresholds, [0.4, 0.9])
+
+    # Check save and restore config
+    tp_obj2 = metrics.TruePositives.from_config(tp_obj.get_config())
+    self.assertEqual(tp_obj2.name, 'my_tp')
+    self.assertEqual(len(tp_obj2.variables), 1)
+    self.assertEqual(tp_obj2.thresholds, [0.4, 0.9])
 
   def test_unweighted(self):
     tp_obj = metrics.TruePositives()
@@ -550,6 +629,12 @@ class PrecisionTest(test.TestCase):
     self.assertEqual([v.name for v in p_obj.variables],
                      ['true_positives:0', 'false_positives:0'])
     self.assertEqual(p_obj.thresholds, [0.4, 0.9])
+
+    # Check save and restore config
+    p_obj2 = metrics.Precision.from_config(p_obj.get_config())
+    self.assertEqual(p_obj2.name, 'my_precision')
+    self.assertEqual(len(p_obj2.variables), 2)
+    self.assertEqual(p_obj2.thresholds, [0.4, 0.9])
 
   def test_value_is_idempotent(self):
     p_obj = metrics.Precision(thresholds=[0.3, 0.72])
@@ -663,6 +748,12 @@ class RecallTest(test.TestCase):
                      ['true_positives:0', 'false_negatives:0'])
     self.assertEqual(r_obj.thresholds, [0.4, 0.9])
 
+    # Check save and restore config
+    r_obj2 = metrics.Recall.from_config(r_obj.get_config())
+    self.assertEqual(r_obj2.name, 'my_recall')
+    self.assertEqual(len(r_obj2.variables), 2)
+    self.assertEqual(r_obj2.thresholds, [0.4, 0.9])
+
   def test_value_is_idempotent(self):
     r_obj = metrics.Recall(thresholds=[0.3, 0.72])
     y_pred = random_ops.random_uniform(shape=(10, 3))
@@ -771,8 +862,15 @@ class SensitivityAtSpecificityTest(test.TestCase, parameterized.TestCase):
         0.4, num_thresholds=100, name='sensitivity_at_specificity_1')
     self.assertEqual(s_obj.name, 'sensitivity_at_specificity_1')
     self.assertLen(s_obj.variables, 4)
-    self.assertEqual(s_obj.value, 0.4)
-    self.assertLen(s_obj.thresholds, 100)
+    self.assertEqual(s_obj.specificity, 0.4)
+    self.assertEqual(s_obj.num_thresholds, 100)
+
+    # Check save and restore config
+    s_obj2 = metrics.SensitivityAtSpecificity.from_config(s_obj.get_config())
+    self.assertEqual(s_obj2.name, 'sensitivity_at_specificity_1')
+    self.assertLen(s_obj2.variables, 4)
+    self.assertEqual(s_obj2.specificity, 0.4)
+    self.assertEqual(s_obj2.num_thresholds, 100)
 
   def test_value_is_idempotent(self):
     s_obj = metrics.SensitivityAtSpecificity(0.7)
@@ -860,8 +958,15 @@ class SpecificityAtSensitivityTest(test.TestCase, parameterized.TestCase):
         0.4, num_thresholds=100, name='specificity_at_sensitivity_1')
     self.assertEqual(s_obj.name, 'specificity_at_sensitivity_1')
     self.assertLen(s_obj.variables, 4)
-    self.assertEqual(s_obj.value, 0.4)
-    self.assertLen(s_obj.thresholds, 100)
+    self.assertEqual(s_obj.sensitivity, 0.4)
+    self.assertEqual(s_obj.num_thresholds, 100)
+
+    # Check save and restore config
+    s_obj2 = metrics.SpecificityAtSensitivity.from_config(s_obj.get_config())
+    self.assertEqual(s_obj2.name, 'specificity_at_sensitivity_1')
+    self.assertLen(s_obj2.variables, 4)
+    self.assertEqual(s_obj2.sensitivity, 0.4)
+    self.assertEqual(s_obj2.num_thresholds, 100)
 
   def test_value_is_idempotent(self):
     s_obj = metrics.SpecificityAtSensitivity(0.7)
@@ -949,6 +1054,11 @@ class CosineProximityTest(test.TestCase):
     self.assertEqual(cosine_obj.name, 'my_cos')
     self.assertEqual(cosine_obj._dtype, dtypes.int32)
 
+    # Check save and restore config
+    cosine_obj2 = metrics.CosineProximity.from_config(cosine_obj.get_config())
+    self.assertEqual(cosine_obj2.name, 'my_cos')
+    self.assertEqual(cosine_obj2._dtype, dtypes.int32)
+
   def test_unweighted(self):
     cosine_obj = metrics.CosineProximity()
     self.evaluate(variables.variables_initializer(cosine_obj.variables))
@@ -973,6 +1083,431 @@ class CosineProximityTest(test.TestCase):
     sample_weight = constant_op.constant((1., 1.5, 2., 2.5))
     result = cosine_obj(y_true, y_pred, sample_weight=sample_weight)
     self.assertAllClose(-0.59916, self.evaluate(result), atol=1e-5)
+
+
+@test_util.run_all_in_graph_and_eager_modes
+class MeanAbsoluteErrorTest(test.TestCase):
+
+  def test_config(self):
+    mae_obj = metrics.MeanAbsoluteError(name='my_mae', dtype=dtypes.int32)
+    self.assertEqual(mae_obj.name, 'my_mae')
+    self.assertEqual(mae_obj._dtype, dtypes.int32)
+
+    # Check save and restore config
+    mae_obj2 = metrics.MeanAbsoluteError.from_config(mae_obj.get_config())
+    self.assertEqual(mae_obj2.name, 'my_mae')
+    self.assertEqual(mae_obj2._dtype, dtypes.int32)
+
+  def test_unweighted(self):
+    mae_obj = metrics.MeanAbsoluteError()
+    self.evaluate(variables.variables_initializer(mae_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+
+    update_op = mae_obj.update_state(y_true, y_pred)
+    self.evaluate(update_op)
+    result = mae_obj.result()
+    self.assertAllClose(0.5, result, atol=1e-5)
+
+  def test_weighted(self):
+    mae_obj = metrics.MeanAbsoluteError()
+    self.evaluate(variables.variables_initializer(mae_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+    sample_weight = constant_op.constant((1., 1.5, 2., 2.5))
+    result = mae_obj(y_true, y_pred, sample_weight=sample_weight)
+    self.assertAllClose(0.54285, self.evaluate(result), atol=1e-5)
+
+
+@test_util.run_all_in_graph_and_eager_modes
+class MeanAbsolutePercentageErrorTest(test.TestCase):
+
+  def test_config(self):
+    mape_obj = metrics.MeanAbsolutePercentageError(
+        name='my_mape', dtype=dtypes.int32)
+    self.assertEqual(mape_obj.name, 'my_mape')
+    self.assertEqual(mape_obj._dtype, dtypes.int32)
+
+    # Check save and restore config
+    mape_obj2 = metrics.MeanAbsolutePercentageError.from_config(
+        mape_obj.get_config())
+    self.assertEqual(mape_obj2.name, 'my_mape')
+    self.assertEqual(mape_obj2._dtype, dtypes.int32)
+
+  def test_unweighted(self):
+    mape_obj = metrics.MeanAbsolutePercentageError()
+    self.evaluate(variables.variables_initializer(mape_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+
+    update_op = mape_obj.update_state(y_true, y_pred)
+    self.evaluate(update_op)
+    result = mape_obj.result()
+    self.assertAllClose(35e7, result, atol=1e-5)
+
+  def test_weighted(self):
+    mape_obj = metrics.MeanAbsolutePercentageError()
+    self.evaluate(variables.variables_initializer(mape_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+    sample_weight = constant_op.constant((1., 1.5, 2., 2.5))
+    result = mape_obj(y_true, y_pred, sample_weight=sample_weight)
+    self.assertAllClose(40e7, self.evaluate(result), atol=1e-5)
+
+
+@test_util.run_all_in_graph_and_eager_modes
+class MeanSquaredErrorTest(test.TestCase):
+
+  def test_config(self):
+    mse_obj = metrics.MeanSquaredError(name='my_mse', dtype=dtypes.int32)
+    self.assertEqual(mse_obj.name, 'my_mse')
+    self.assertEqual(mse_obj._dtype, dtypes.int32)
+
+    # Check save and restore config
+    mse_obj2 = metrics.MeanSquaredError.from_config(mse_obj.get_config())
+    self.assertEqual(mse_obj2.name, 'my_mse')
+    self.assertEqual(mse_obj2._dtype, dtypes.int32)
+
+  def test_unweighted(self):
+    mse_obj = metrics.MeanSquaredError()
+    self.evaluate(variables.variables_initializer(mse_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+
+    update_op = mse_obj.update_state(y_true, y_pred)
+    self.evaluate(update_op)
+    result = mse_obj.result()
+    self.assertAllClose(0.5, result, atol=1e-5)
+
+  def test_weighted(self):
+    mse_obj = metrics.MeanSquaredError()
+    self.evaluate(variables.variables_initializer(mse_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+    sample_weight = constant_op.constant((1., 1.5, 2., 2.5))
+    result = mse_obj(y_true, y_pred, sample_weight=sample_weight)
+    self.assertAllClose(0.54285, self.evaluate(result), atol=1e-5)
+
+
+@test_util.run_all_in_graph_and_eager_modes
+class MeanSquaredLogarithmicErrorTest(test.TestCase):
+
+  def test_config(self):
+    msle_obj = metrics.MeanSquaredLogarithmicError(
+        name='my_msle', dtype=dtypes.int32)
+    self.assertEqual(msle_obj.name, 'my_msle')
+    self.assertEqual(msle_obj._dtype, dtypes.int32)
+
+    # Check save and restore config
+    msle_obj2 = metrics.MeanSquaredLogarithmicError.from_config(
+        msle_obj.get_config())
+    self.assertEqual(msle_obj2.name, 'my_msle')
+    self.assertEqual(msle_obj2._dtype, dtypes.int32)
+
+  def test_unweighted(self):
+    msle_obj = metrics.MeanSquaredLogarithmicError()
+    self.evaluate(variables.variables_initializer(msle_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+
+    update_op = msle_obj.update_state(y_true, y_pred)
+    self.evaluate(update_op)
+    result = msle_obj.result()
+    self.assertAllClose(0.24022, result, atol=1e-5)
+
+  def test_weighted(self):
+    msle_obj = metrics.MeanSquaredLogarithmicError()
+    self.evaluate(variables.variables_initializer(msle_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+    sample_weight = constant_op.constant((1., 1.5, 2., 2.5))
+    result = msle_obj(y_true, y_pred, sample_weight=sample_weight)
+    self.assertAllClose(0.26082, self.evaluate(result), atol=1e-5)
+
+
+@test_util.run_all_in_graph_and_eager_modes
+class HingeTest(test.TestCase):
+
+  def test_config(self):
+    hinge_obj = metrics.Hinge(name='hinge', dtype=dtypes.int32)
+    self.assertEqual(hinge_obj.name, 'hinge')
+    self.assertEqual(hinge_obj._dtype, dtypes.int32)
+
+    # Check save and restore config
+    hinge_obj2 = metrics.Hinge.from_config(hinge_obj.get_config())
+    self.assertEqual(hinge_obj2.name, 'hinge')
+    self.assertEqual(hinge_obj2._dtype, dtypes.int32)
+
+  def test_unweighted(self):
+    hinge_obj = metrics.Hinge()
+    self.evaluate(variables.variables_initializer(hinge_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+
+    update_op = hinge_obj.update_state(y_true, y_pred)
+    self.evaluate(update_op)
+    result = hinge_obj.result()
+    self.assertAllClose(0.65, result, atol=1e-5)
+
+  def test_weighted(self):
+    hinge_obj = metrics.Hinge()
+    self.evaluate(variables.variables_initializer(hinge_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+    sample_weight = constant_op.constant((1., 1.5, 2., 2.5))
+    result = hinge_obj(y_true, y_pred, sample_weight=sample_weight)
+    self.assertAllClose(0.65714, self.evaluate(result), atol=1e-5)
+
+
+@test_util.run_all_in_graph_and_eager_modes
+class SquaredHingeTest(test.TestCase):
+
+  def test_config(self):
+    sq_hinge_obj = metrics.SquaredHinge(name='sq_hinge', dtype=dtypes.int32)
+    self.assertEqual(sq_hinge_obj.name, 'sq_hinge')
+    self.assertEqual(sq_hinge_obj._dtype, dtypes.int32)
+
+    # Check save and restore config
+    sq_hinge_obj2 = metrics.SquaredHinge.from_config(sq_hinge_obj.get_config())
+    self.assertEqual(sq_hinge_obj2.name, 'sq_hinge')
+    self.assertEqual(sq_hinge_obj2._dtype, dtypes.int32)
+
+  def test_unweighted(self):
+    sq_hinge_obj = metrics.SquaredHinge()
+    self.evaluate(variables.variables_initializer(sq_hinge_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+
+    update_op = sq_hinge_obj.update_state(y_true, y_pred)
+    self.evaluate(update_op)
+    result = sq_hinge_obj.result()
+    self.assertAllClose(0.65, result, atol=1e-5)
+
+  def test_weighted(self):
+    sq_hinge_obj = metrics.SquaredHinge()
+    self.evaluate(variables.variables_initializer(sq_hinge_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+    sample_weight = constant_op.constant((1., 1.5, 2., 2.5))
+    result = sq_hinge_obj(y_true, y_pred, sample_weight=sample_weight)
+    self.assertAllClose(0.65714, self.evaluate(result), atol=1e-5)
+
+
+@test_util.run_all_in_graph_and_eager_modes
+class CategoricalHingeTest(test.TestCase):
+
+  def test_config(self):
+    cat_hinge_obj = metrics.CategoricalHinge(
+        name='cat_hinge', dtype=dtypes.int32)
+    self.assertEqual(cat_hinge_obj.name, 'cat_hinge')
+    self.assertEqual(cat_hinge_obj._dtype, dtypes.int32)
+
+    # Check save and restore config
+    cat_hinge_obj2 = metrics.CategoricalHinge.from_config(
+        cat_hinge_obj.get_config())
+    self.assertEqual(cat_hinge_obj2.name, 'cat_hinge')
+    self.assertEqual(cat_hinge_obj2._dtype, dtypes.int32)
+
+  def test_unweighted(self):
+    cat_hinge_obj = metrics.CategoricalHinge()
+    self.evaluate(variables.variables_initializer(cat_hinge_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+
+    update_op = cat_hinge_obj.update_state(y_true, y_pred)
+    self.evaluate(update_op)
+    result = cat_hinge_obj.result()
+    self.assertAllClose(0.5, result, atol=1e-5)
+
+  def test_weighted(self):
+    cat_hinge_obj = metrics.CategoricalHinge()
+    self.evaluate(variables.variables_initializer(cat_hinge_obj.variables))
+    y_true = constant_op.constant(((0, 1, 0, 1, 0), (0, 0, 1, 1, 1),
+                                   (1, 1, 1, 1, 0), (0, 0, 0, 0, 1)))
+    y_pred = constant_op.constant(((0, 0, 1, 1, 0), (1, 1, 1, 1, 1),
+                                   (0, 1, 0, 1, 0), (1, 1, 1, 1, 1)))
+    sample_weight = constant_op.constant((1., 1.5, 2., 2.5))
+    result = cat_hinge_obj(y_true, y_pred, sample_weight=sample_weight)
+    self.assertAllClose(0.5, self.evaluate(result), atol=1e-5)
+
+
+@test_util.run_all_in_graph_and_eager_modes
+class RootMeanSquaredErrorTest(test.TestCase):
+
+  def test_config(self):
+    rmse_obj = metrics.RootMeanSquaredError(name='rmse', dtype=dtypes.int32)
+    self.assertEqual(rmse_obj.name, 'rmse')
+    self.assertEqual(rmse_obj._dtype, dtypes.int32)
+
+    rmse_obj2 = metrics.RootMeanSquaredError.from_config(rmse_obj.get_config())
+    self.assertEqual(rmse_obj2.name, 'rmse')
+    self.assertEqual(rmse_obj2._dtype, dtypes.int32)
+
+  def test_unweighted(self):
+    rmse_obj = metrics.RootMeanSquaredError()
+    self.evaluate(variables.variables_initializer(rmse_obj.variables))
+    y_true = constant_op.constant((2, 4, 6))
+    y_pred = constant_op.constant((1, 3, 2))
+
+    update_op = rmse_obj.update_state(y_true, y_pred)
+    self.evaluate(update_op)
+    result = rmse_obj.result()
+    # error = [-1, -1, -4], square(error) = [1, 1, 16], mean = 18/3 = 6
+    self.assertAllClose(math.sqrt(6), result, atol=1e-3)
+
+  def test_weighted(self):
+    rmse_obj = metrics.RootMeanSquaredError()
+    self.evaluate(variables.variables_initializer(rmse_obj.variables))
+    y_true = constant_op.constant((2, 4, 6, 8))
+    y_pred = constant_op.constant((1, 3, 2, 3))
+    sample_weight = constant_op.constant((0, 1, 0, 1))
+    result = rmse_obj(y_true, y_pred, sample_weight=sample_weight)
+    self.assertAllClose(math.sqrt(13), self.evaluate(result), atol=1e-3)
+
+
+@test_util.run_all_in_graph_and_eager_modes
+class TopKCategoricalAccuracyTest(test.TestCase):
+
+  def test_config(self):
+    a_obj = metrics.TopKCategoricalAccuracy(name='topkca', dtype=dtypes.int32)
+    self.assertEqual(a_obj.name, 'topkca')
+    self.assertEqual(a_obj._dtype, dtypes.int32)
+
+    a_obj2 = metrics.TopKCategoricalAccuracy.from_config(a_obj.get_config())
+    self.assertEqual(a_obj2.name, 'topkca')
+    self.assertEqual(a_obj2._dtype, dtypes.int32)
+
+  def test_correctness(self):
+    a_obj = metrics.TopKCategoricalAccuracy()
+    self.evaluate(variables.variables_initializer(a_obj.variables))
+    y_true = constant_op.constant([[0, 0, 1], [0, 1, 0]])
+    y_pred = constant_op.constant([[0.1, 0.9, 0.8], [0.05, 0.95, 0]])
+
+    result = a_obj(y_true, y_pred)
+    self.assertEqual(1, self.evaluate(result))  # both the samples match
+
+    # With `k` < 5.
+    a_obj = metrics.TopKCategoricalAccuracy(k=1)
+    self.evaluate(variables.variables_initializer(a_obj.variables))
+    result = a_obj(y_true, y_pred)
+    self.assertEqual(0.5, self.evaluate(result))  # only sample #2 matches
+
+    # With `k` > 5.
+    y_true = constant_op.constant([[0, 0, 1, 0, 0, 0, 0],
+                                   [0, 1, 0, 0, 0, 0, 0]])
+    y_pred = constant_op.constant([[0.5, 0.9, 0.1, 0.7, 0.6, 0.5, 0.4],
+                                   [0.05, 0.95, 0, 0, 0, 0, 0]])
+    a_obj = metrics.TopKCategoricalAccuracy(k=6)
+    self.evaluate(variables.variables_initializer(a_obj.variables))
+    result = a_obj(y_true, y_pred)
+    self.assertEqual(0.5, self.evaluate(result))  # only 1 sample matches.
+
+
+@test_util.run_all_in_graph_and_eager_modes
+class SparseTopKCategoricalAccuracyTest(test.TestCase):
+
+  def test_config(self):
+    a_obj = metrics.SparseTopKCategoricalAccuracy(
+        name='stopkca', dtype=dtypes.int32)
+    self.assertEqual(a_obj.name, 'stopkca')
+    self.assertEqual(a_obj._dtype, dtypes.int32)
+
+    a_obj2 = metrics.SparseTopKCategoricalAccuracy.from_config(
+        a_obj.get_config())
+    self.assertEqual(a_obj2.name, 'stopkca')
+    self.assertEqual(a_obj2._dtype, dtypes.int32)
+
+  def test_correctness(self):
+    a_obj = metrics.SparseTopKCategoricalAccuracy()
+    self.evaluate(variables.variables_initializer(a_obj.variables))
+    y_true = constant_op.constant([2, 1])
+    y_pred = constant_op.constant([[0.1, 0.9, 0.8], [0.05, 0.95, 0]])
+
+    result = a_obj(y_true, y_pred)
+    self.assertEqual(1, self.evaluate(result))  # both the samples match
+
+    # With `k` < 5.
+    a_obj = metrics.SparseTopKCategoricalAccuracy(k=1)
+    self.evaluate(variables.variables_initializer(a_obj.variables))
+    result = a_obj(y_true, y_pred)
+    self.assertEqual(0.5, self.evaluate(result))  # only sample #2 matches
+
+    # With `k` > 5.
+    y_pred = constant_op.constant([[0.5, 0.9, 0.1, 0.7, 0.6, 0.5, 0.4],
+                                   [0.05, 0.95, 0, 0, 0, 0, 0]])
+    a_obj = metrics.SparseTopKCategoricalAccuracy(k=6)
+    self.evaluate(variables.variables_initializer(a_obj.variables))
+    result = a_obj(y_true, y_pred)
+    self.assertEqual(0.5, self.evaluate(result))  # only 1 sample matches.
+
+
+@test_util.run_all_in_graph_and_eager_modes
+class LogcoshTest(test.TestCase):
+
+  def setup(self):
+    y_pred = np.asarray([1, 9, 2, -5, -2, 6]).reshape((2, 3))
+    y_true = np.asarray([4, 8, 12, 8, 1, 3]).reshape((2, 3))
+
+    self.batch_size = 6
+    error = y_pred - y_true
+    self.expected_results = np.log((np.exp(error) + np.exp(-error)) / 2)
+
+    self.y_pred = constant_op.constant(y_pred, dtype=dtypes.float32)
+    self.y_true = constant_op.constant(y_true)
+
+  def test_config(self):
+    logcosh_obj = metrics.Logcosh(name='logcosh', dtype=dtypes.int32)
+    self.assertEqual(logcosh_obj.name, 'logcosh')
+    self.assertEqual(logcosh_obj._dtype, dtypes.int32)
+
+  def test_unweighted(self):
+    self.setup()
+    logcosh_obj = metrics.Logcosh()
+    self.evaluate(variables.variables_initializer(logcosh_obj.variables))
+
+    update_op = logcosh_obj.update_state(self.y_true, self.y_pred)
+    self.evaluate(update_op)
+    result = logcosh_obj.result()
+    expected_result = np.sum(self.expected_results) / self.batch_size
+    self.assertAllClose(result, expected_result, atol=1e-3)
+
+  def test_weighted(self):
+    self.setup()
+    logcosh_obj = metrics.Logcosh()
+    self.evaluate(variables.variables_initializer(logcosh_obj.variables))
+    sample_weight = constant_op.constant([1.2, 3.4], shape=(2, 1))
+    result = logcosh_obj(self.y_true, self.y_pred, sample_weight=sample_weight)
+
+    sample_weight = np.asarray([1.2, 1.2, 1.2, 3.4, 3.4, 3.4]).reshape((2, 3))
+    expected_result = np.multiply(self.expected_results, sample_weight)
+    expected_result = np.sum(expected_result) / np.sum(sample_weight)
+    self.assertAllClose(self.evaluate(result), expected_result, atol=1e-3)
 
 
 def _get_model(compile_metrics):

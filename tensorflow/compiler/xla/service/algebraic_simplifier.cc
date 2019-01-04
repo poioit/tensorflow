@@ -26,6 +26,8 @@ limitations under the License.
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/str_cat.h"
@@ -251,7 +253,7 @@ class AlgebraicSimplifierVisitor : public DfsHloVisitorWithDefault {
 
   // Reshapes an instruction to rank 1 if it is not already rank 1.
   HloInstruction* Flatten(HloInstruction* hlo) {
-    if (ShapeUtil::Rank(hlo->shape()) == 1) {
+    if (hlo->shape().rank() == 1) {
       return hlo;
     }
     return computation_->AddInstruction(HloInstruction::CreateReshape(
@@ -368,6 +370,11 @@ class AlgebraicSimplifierVisitor : public DfsHloVisitorWithDefault {
 
   // Tries to convert slice(reshape(X)) into reshape(slice(X))
   StatusOr<bool> TryToReorderSliceAndReshape(HloInstruction* slice);
+
+  // If the sort instruction has a tuple shape then looks for unused output
+  // values and removes them from the sort instruction. Returns true if the
+  // graph have been modified.
+  StatusOr<bool> RemoveUnusedOperandFromSort(HloInstruction* sort);
 
   // Current HloComputation instance the AlgebraicSimplifierVisitor is
   // traversing.
@@ -687,7 +694,7 @@ Status AlgebraicSimplifierVisitor::HandleConcatenate(
       return Status::OK();
     }
     PaddingConfig padding_config;
-    for (int64 dim = 0; dim < ShapeUtil::Rank(operands[0]->shape()); ++dim) {
+    for (int64 dim = 0; dim < operands[0]->shape().rank(); ++dim) {
       auto padding_config_dim = padding_config.add_dimensions();
       padding_config_dim->set_edge_padding_high(0);
       padding_config_dim->set_edge_padding_low(0);
@@ -715,7 +722,7 @@ Status AlgebraicSimplifierVisitor::HandleConcatenate(
 
 static HloInstruction* BuildTupleConstant(HloComputation* computation,
                                           const LiteralSlice& literal) {
-  if (ShapeUtil::IsTuple(literal.shape())) {
+  if (literal.shape().IsTuple()) {
     std::vector<HloInstruction*> elems;
     elems.reserve(ShapeUtil::TupleElementCount(literal.shape()));
     for (int i = 0; i < ShapeUtil::TupleElementCount(literal.shape()); ++i) {
@@ -732,7 +739,7 @@ static HloInstruction* BuildTupleConstant(HloComputation* computation,
 Status AlgebraicSimplifierVisitor::HandleConstant(HloInstruction* constant) {
   // Tuple constants aren't directly supported by any backend. Expand them into
   // explicit Tuple instructions.
-  if (ShapeUtil::IsTuple(constant->shape())) {
+  if (constant->shape().IsTuple()) {
     return ReplaceInstruction(
         constant, BuildTupleConstant(computation_, constant->literal()));
   }
@@ -754,7 +761,7 @@ Status AlgebraicSimplifierVisitor::HandleConstant(HloInstruction* constant) {
   }
 
   // If a literal is an increasing sequence from zero, replace it with an iota.
-  if (ShapeUtil::Rank(constant->shape()) == 1 &&
+  if (constant->shape().rank() == 1 &&
       ShapeUtil::ElementsIn(constant->shape()) > 1 &&
       constant->literal().IsR1Iota()) {
     return ReplaceWithNewInstruction(
@@ -930,9 +937,9 @@ StatusOr<bool> AlgebraicSimplifierVisitor::HandleDotStrengthReduction(
     return -1;
   };
 
-  const int64 dot_rank = ShapeUtil::Rank(dot->shape());
-  const int64 rhs_rank = ShapeUtil::Rank(rhs->shape());
-  const int64 lhs_rank = ShapeUtil::Rank(lhs->shape());
+  const int64 dot_rank = dot->shape().rank();
+  const int64 rhs_rank = rhs->shape().rank();
+  const int64 lhs_rank = lhs->shape().rank();
   const auto& dnums = dot->dot_dimension_numbers();
   if (dnums.rhs_contracting_dimensions_size() > 1) {
     return false;
@@ -1036,7 +1043,7 @@ StatusOr<bool> AlgebraicSimplifierVisitor::HandleDotStrengthReduction(
   //    )
   if (lhs_rank == 1 ||
       (lhs_rank == 2 && lhs->shape().dimensions(lhs_kept_dim) == 1)) {
-    if (ShapeUtil::Rank(rhs->shape()) == 1) {
+    if (rhs->shape().rank() == 1) {
       TF_RETURN_IF_ERROR(
           ReplaceInstruction(dot, reshape_if_necessary(add_reduce_in_f32(
                                       multiply(Flatten(lhs), rhs), 0))));
@@ -1449,8 +1456,8 @@ Status AlgebraicSimplifierVisitor::HandleDot(HloInstruction* dot) {
       dot->shape().element_type() != BF16) {
     return Status::OK();
   }
-  if (ShapeUtil::Rank(lhs->shape()) > 2 || ShapeUtil::Rank(rhs->shape()) > 2 ||
-      ShapeUtil::Rank(dot->shape()) > 2) {
+  if (lhs->shape().rank() > 2 || rhs->shape().rank() > 2 ||
+      dot->shape().rank() > 2) {
     if (options_.enable_dot_strength_reduction() &&
         !options_.is_layout_sensitive()) {
       TF_RETURN_IF_ERROR(HandleDotStrengthReduction(dot).status());
@@ -1686,7 +1693,7 @@ bool OutputIsPermutationOfOperandElements(HloInstruction* instruction,
     case HloOpcode::kTranspose:
       return true;
     case HloOpcode::kSort:
-      return (!ShapeUtil::IsTuple(instruction->shape()));
+      return (!instruction->shape().IsTuple());
     default:
       return false;
   }
@@ -1732,8 +1739,7 @@ Status AlgebraicSimplifierVisitor::HandleBroadcast(HloInstruction* broadcast) {
 
   // A degenerate broadcast that has the same input and output rank can be
   // converted into a transpose.
-  if (ShapeUtil::Rank(broadcast->shape()) ==
-          ShapeUtil::Rank(operand->shape()) &&
+  if (broadcast->shape().rank() == operand->shape().rank() &&
       ShapeUtil::ElementsIn(broadcast->shape()) ==
           ShapeUtil::ElementsIn(operand->shape())) {
     VLOG(10) << "transform broadcast(X) -> transpose(X) where "
@@ -1888,7 +1894,7 @@ Status AlgebraicSimplifierVisitor::HandlePad(HloInstruction* pad) {
   if (HasInteriorPadding(pad->padding_config())) {
     PaddingConfig padding_config = pad->padding_config();
     bool cleared_interior_padding = false;
-    for (int64 i = 0; i < ShapeUtil::Rank(pad->shape()); ++i) {
+    for (int64 i = 0; i < pad->shape().rank(); ++i) {
       if (padding_config.dimensions(i).interior_padding() > 0 &&
           pad->operand(0)->shape().dimensions(i) == 1) {
         cleared_interior_padding = true;
@@ -2276,7 +2282,7 @@ StatusOr<bool> AlgebraicSimplifierVisitor::TrySimplifyScalarSlice(
   if (slice->operand(0)->opcode() == HloOpcode::kConcatenate) {
     VLOG(10) << "Trying to simplify scalar slice of concat";
     // Only do this for R1, there's no chance of this being useful otherwise.
-    if (ShapeUtil::Rank(slice->shape()) != 1) {
+    if (slice->shape().rank() != 1) {
       VLOG(10) << "Not folding, slice is not rank 1";
       return false;
     }
@@ -2326,7 +2332,7 @@ StatusOr<bool> AlgebraicSimplifierVisitor::TryToReorderSliceAndReshape(
     return false;
   }
   HloInstruction* new_slice_operand = reshape->mutable_operand(0);
-  int64 slice_rank = ShapeUtil::Rank(slice->shape());
+  int64 slice_rank = slice->shape().rank();
   std::vector<int64> sliced_dims;
   for (int64 i = 0; i < slice_rank; ++i) {
     if (slice->slice_starts(i) != 0 ||
@@ -2338,7 +2344,7 @@ StatusOr<bool> AlgebraicSimplifierVisitor::TryToReorderSliceAndReshape(
   if (sliced_dims.size() == 1 && sliced_dims[0] == 0 &&
       slice->slice_starts(0) == 0) {
     const Shape& new_slice_shape = new_slice_operand->shape();
-    const int64 rank = ShapeUtil::Rank(new_slice_shape);
+    const int64 rank = new_slice_shape.rank();
     std::vector<int64> new_slice_starts(rank, 0);
     std::vector<int64> new_slice_stides(rank, 1);
     std::vector<int64> new_slice_limits(new_slice_shape.dimensions().begin(),
@@ -2438,7 +2444,7 @@ Status AlgebraicSimplifierVisitor::HandleDynamicUpdateSlice(
 Status AlgebraicSimplifierVisitor::HandleReduce(HloInstruction* reduce) {
   // TODO(b/112040122): Most of those optimizations can be done for multi-output
   // reduces.
-  if (ShapeUtil::IsTuple(reduce->shape())) {
+  if (reduce->shape().IsTuple()) {
     return Status::OK();
   }
 
@@ -2456,8 +2462,7 @@ Status AlgebraicSimplifierVisitor::HandleReduce(HloInstruction* reduce) {
   // A Transpose feeding a reduce can simply permute the reduction dimensions
   // field if the output of the reduce is a vector or scalar. Higher ranked
   // result may require a transpose of the output.
-  if (ShapeUtil::Rank(reduce->shape()) <= 1 &&
-      arg->opcode() == HloOpcode::kTranspose) {
+  if (reduce->shape().rank() <= 1 && arg->opcode() == HloOpcode::kTranspose) {
     auto transpose_dimensions = arg->dimensions();
     std::vector<int64> new_reduce_dimensions;
     for (auto dim : dimensions) {
@@ -2516,8 +2521,8 @@ Status AlgebraicSimplifierVisitor::HandleReduce(HloInstruction* reduce) {
     std::vector<std::pair<int64, int64>> unmodified_dims =
         ShapeUtil::DimensionsUnmodifiedByReshape(arg->operand(0)->shape(),
                                                  arg->shape());
-    std::vector<bool> arg_dim_in_output(ShapeUtil::Rank(arg->shape()), true);
-    std::vector<bool> arg_dim_unmodified(ShapeUtil::Rank(arg->shape()), false);
+    std::vector<bool> arg_dim_in_output(arg->shape().rank(), true);
+    std::vector<bool> arg_dim_unmodified(arg->shape().rank(), false);
     for (auto dim : dimensions) {
       arg_dim_in_output[dim] = false;
     }
@@ -2535,15 +2540,15 @@ Status AlgebraicSimplifierVisitor::HandleReduce(HloInstruction* reduce) {
     }
     if (can_move_reshape_into_reduce) {
       changed_ = true;
-      std::unordered_set<int64> dimensions_not_to_reduce;
+      absl::flat_hash_set<int64> dimensions_not_to_reduce;
       for (auto dim_pair : unmodified_dims) {
         if (arg_dim_in_output[dim_pair.second]) {
           dimensions_not_to_reduce.insert(dim_pair.first);
         }
       }
       std::vector<int64> new_reduce_dimensions;
-      for (int64 i = 0; i < ShapeUtil::Rank(arg->operand(0)->shape()); ++i) {
-        if (dimensions_not_to_reduce.count(i) == 0) {
+      for (int64 i = 0; i < arg->operand(0)->shape().rank(); ++i) {
+        if (!dimensions_not_to_reduce.contains(i)) {
           new_reduce_dimensions.push_back(i);
         }
       }
@@ -2597,51 +2602,53 @@ Status AlgebraicSimplifierVisitor::HandleReduceWindow(
                                   function));
   }
 
-  // A reduce window can be expressed as a reduce and a reshape if all
-  // dimensions either have a window size of one or the entire dimension. If
-  // there is no stride, dilation, or padding, this is as easy as checking the
-  // size of the output shape and window dimension.
-  //
-  // The reshape is a bitcast since it adds one-sized dimensions. Often these
-  // ones are immediately removed as well with another reshape. The
-  // implementation of reduce tends to be slightly more efficient at reducing
-  // entire dimensions compared to reduce window.
-  auto effective_reduce_dims = [&] {
-    if (window_util::HasStride(window) || window_util::HasDilation(window) ||
-        window_util::HasPadding(window)) {
-      return absl::InlinedVector<int64, 8>{};
-    }
-    absl::InlinedVector<int64, 8> reduce_dims;
-    for (int64 i = 0; i < window.dimensions_size(); ++i) {
-      if (window.dimensions(i).size() == 1) {
-        continue;
-      } else if (reduce_window->shape().dimensions(i) == 1) {
-        reduce_dims.push_back(i);
-      } else {
+  if (options_.enable_window_reduce_to_reduce_replacement()) {
+    // A reduce window can be expressed as a reduce and a reshape if all
+    // dimensions either have a window size of one or the entire dimension. If
+    // there is no stride, dilation, or padding, this is as easy as checking the
+    // size of the output shape and window dimension.
+    //
+    // The reshape is a bitcast since it adds one-sized dimensions. Often these
+    // ones are immediately removed as well with another reshape. The
+    // implementation of reduce tends to be slightly more efficient at reducing
+    // entire dimensions compared to reduce window.
+    auto effective_reduce_dims = [&] {
+      if (window_util::HasStride(window) || window_util::HasDilation(window) ||
+          window_util::HasPadding(window)) {
         return absl::InlinedVector<int64, 8>{};
       }
-    }
-    return reduce_dims;
-  }();
+      absl::InlinedVector<int64, 8> reduce_dims;
+      for (int64 i = 0; i < window.dimensions_size(); ++i) {
+        if (window.dimensions(i).size() == 1) {
+          continue;
+        } else if (reduce_window->shape().dimensions(i) == 1) {
+          reduce_dims.push_back(i);
+        } else {
+          return absl::InlinedVector<int64, 8>{};
+        }
+      }
+      return reduce_dims;
+    }();
 
-  // If a reduce window can be expressed as a reduce, do so and reshape the
-  // output.
-  if (!effective_reduce_dims.empty()) {
-    Shape reduce_shape = ShapeUtil::FilterDimensions(
-        [&](int64 dim) {
-          return !absl::c_linear_search(effective_reduce_dims, dim);
-        },
-        reduce_window->shape());
-    HloInstruction* reduce =
-        computation_->AddInstruction(HloInstruction::CreateReduce(
-            /*shape=*/reduce_shape,
-            /*operand=*/operand,
-            /*init_value=*/reduce_window->mutable_operand(1),
-            /*dimensions_to_reduce=*/effective_reduce_dims,
-            /*reduce_computation=*/function));
-    return ReplaceWithNewInstruction(
-        reduce_window,
-        HloInstruction::CreateReshape(reduce_window->shape(), reduce));
+    // If a reduce window can be expressed as a reduce, do so and reshape the
+    // output.
+    if (!effective_reduce_dims.empty()) {
+      Shape reduce_shape = ShapeUtil::FilterDimensions(
+          [&](int64 dim) {
+            return !absl::c_linear_search(effective_reduce_dims, dim);
+          },
+          reduce_window->shape());
+      HloInstruction* reduce =
+          computation_->AddInstruction(HloInstruction::CreateReduce(
+              /*shape=*/reduce_shape,
+              /*operand=*/operand,
+              /*init_value=*/reduce_window->mutable_operand(1),
+              /*dimensions_to_reduce=*/effective_reduce_dims,
+              /*reduce_computation=*/function));
+      return ReplaceWithNewInstruction(
+          reduce_window,
+          HloInstruction::CreateReshape(reduce_window->shape(), reduce));
+    }
   }
 
   // This optimization folds a pad op into reduce_window.
@@ -2779,7 +2786,7 @@ Status AlgebraicSimplifierVisitor::HandleReduceWindow(
   // Carry out the folding of the pad into reduce_window.
   VLOG(10) << "Folding pad into reduce-window.";
   Window new_window = window;
-  const int64 rank = ShapeUtil::Rank(reduce_window->shape());
+  const int64 rank = reduce_window->shape().rank();
   TF_RET_CHECK(pad_config.dimensions_size() == rank);
   TF_RET_CHECK(window.dimensions_size() == rank);
   for (int64 i = 0; i < rank; ++i) {
@@ -2816,6 +2823,69 @@ Status AlgebraicSimplifierVisitor::HandleSelect(HloInstruction* select) {
   return Status::OK();
 }
 
+StatusOr<bool> AlgebraicSimplifierVisitor::RemoveUnusedOperandFromSort(
+    HloInstruction* sort) {
+  if (!sort->shape().IsTuple()) {
+    return false;
+  }
+
+  if (sort->parent()->root_instruction() == sort) {
+    // Can't analyse users of the root instruction.
+    return false;
+  }
+
+  // Index 0 is the sorting key used by the sort HLO itself.
+  absl::flat_hash_set<int64> used_indices{0};
+  for (const HloInstruction* user : sort->users()) {
+    if (user->opcode() != HloOpcode::kGetTupleElement) {
+      // Can't analyse users other then get-tuple-element.
+      return false;
+    }
+    used_indices.insert(user->tuple_index());
+  }
+
+  if (used_indices.size() == sort->operand_count()) {
+    // All operands are used.
+    return false;
+  }
+
+  std::vector<HloInstruction*> operands{sort->mutable_operand(0)};
+  std::vector<Shape> new_shapes{sort->operand(0)->shape()};
+  for (int64 i = 1; i < sort->operand_count(); ++i) {
+    if (used_indices.count(i)) {
+      operands.push_back(sort->mutable_operand(i));
+      new_shapes.push_back(sort->operand(i)->shape());
+    }
+  }
+  Shape new_sort_shape = new_shapes.size() == 1
+                             ? new_shapes[0]
+                             : ShapeUtil::MakeTupleShape(new_shapes);
+  HloInstruction* new_sort = computation_->AddInstruction(
+      sort->CloneWithNewOperands(new_sort_shape, operands));
+
+  // Map from original get-tuple-element tuple index to new HLO instruction
+  absl::flat_hash_map<int64, HloInstruction*> result_map;
+  if (new_sort->shape().IsTuple()) {
+    // Old sort key maps to new sort key.
+    int64 new_index = 0;
+    for (int64 i = 0; i < sort->operand_count(); ++i) {
+      if (used_indices.count(i)) {
+        result_map[i] =
+            computation_->AddInstruction(HloInstruction::CreateGetTupleElement(
+                new_shapes[new_index], new_sort, new_index));
+        ++new_index;
+      }
+    }
+  } else {
+    result_map[0] = new_sort;
+  }
+  for (HloInstruction* user : sort->users()) {
+    TF_RETURN_IF_ERROR(
+        user->ReplaceAllUsesWith(result_map.at(user->tuple_index())));
+  }
+  return true;
+}
+
 Status AlgebraicSimplifierVisitor::HandleSort(HloInstruction* sort) {
   auto operand = sort->mutable_operand(0);
   int64 dimension_to_sort = sort->dimensions(0);
@@ -2828,6 +2898,14 @@ Status AlgebraicSimplifierVisitor::HandleSort(HloInstruction* sort) {
     return ReplaceWithNewInstruction(
         sort, HloInstruction::CreateTuple(sort->operands()));
   }
+
+  // Remove the unused values from a key-value sort.
+  TF_ASSIGN_OR_RETURN(bool removed_operand, RemoveUnusedOperandFromSort(sort));
+  if (removed_operand) {
+    changed_ = true;
+    return Status::OK();
+  }
+
   if (!options_.enable_permutation_sort_replacement()) {
     return Status::OK();
   }
@@ -2862,7 +2940,7 @@ Status AlgebraicSimplifierVisitor::HandleSort(HloInstruction* sort) {
         // - Use this as the indices parameter of scatter, and set updates
         //   of the scatter to be a reshaped 'values' parameter of sort (adding
         //   'rank' many 1 dimensions at the end).
-        int64 rank = ShapeUtil::Rank(operand->shape());
+        int64 rank = operand->shape().rank();
         Shape extended_shape = operand->shape();
         extended_shape.add_dimensions(1);
         extended_shape.mutable_layout()->add_minor_to_major(rank);

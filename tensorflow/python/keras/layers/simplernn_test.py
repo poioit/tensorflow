@@ -21,7 +21,7 @@ from __future__ import print_function
 import numpy as np
 
 from tensorflow.python import keras
-from tensorflow.python.framework import test_util as tf_test_util
+from tensorflow.python.eager import context
 from tensorflow.python.keras import keras_parameterized
 from tensorflow.python.keras import testing_utils
 from tensorflow.python.platform import test
@@ -118,6 +118,28 @@ class SimpleRNNLayerTest(keras_parameterized.TestCase):
       l2 = layer_class.from_config(l1.get_config())
       assert l1.get_config() == l2.get_config()
 
+  def test_regularizers_SimpleRNN(self):
+    embedding_dim = 4
+    layer_class = keras.layers.SimpleRNN
+    layer = layer_class(
+        5,
+        return_sequences=False,
+        weights=None,
+        input_shape=(None, embedding_dim),
+        kernel_regularizer=keras.regularizers.l1(0.01),
+        recurrent_regularizer=keras.regularizers.l1(0.01),
+        bias_regularizer='l2',
+        activity_regularizer='l1')
+    layer.build((None, None, 2))
+    self.assertEqual(len(layer.losses), 3)
+
+    x = keras.backend.variable(np.ones((2, 3, 2)))
+    layer(x)
+    if context.executing_eagerly():
+      self.assertEqual(len(layer.losses), 4)
+    else:
+      self.assertEqual(len(layer.get_losses_for(x)), 1)
+
   def test_statefulness_SimpleRNN(self):
     num_samples = 2
     timesteps = 3
@@ -136,7 +158,7 @@ class SimpleRNNLayerTest(keras_parameterized.TestCase):
         units, return_sequences=False, stateful=True, weights=None)
     model.add(layer)
     model.compile(optimizer=gradient_descent.GradientDescentOptimizer(0.01),
-                  loss='mse')
+                  loss='mse', run_eagerly=testing_utils.should_run_eagerly())
     out1 = model.predict(np.ones((num_samples, timesteps)))
     self.assertEqual(out1.shape, (num_samples, units))
 
@@ -179,30 +201,6 @@ class SimpleRNNLayerTest(keras_parameterized.TestCase):
     out7 = model.predict(right_padded_input)
 
     np.testing.assert_allclose(out7, out6, atol=1e-5)
-
-
-class SimpleRNNLayerGraphOnlyTest(test.TestCase):
-
-  # b/120919032
-  @tf_test_util.run_deprecated_v1
-  def test_regularizers_SimpleRNN(self):
-    embedding_dim = 4
-    layer_class = keras.layers.SimpleRNN
-    layer = layer_class(
-        5,
-        return_sequences=False,
-        weights=None,
-        input_shape=(None, embedding_dim),
-        kernel_regularizer=keras.regularizers.l1(0.01),
-        recurrent_regularizer=keras.regularizers.l1(0.01),
-        bias_regularizer='l2',
-        activity_regularizer='l1')
-    layer.build((None, None, 2))
-    self.assertEqual(len(layer.losses), 3)
-
-    x = keras.backend.variable(np.ones((2, 3, 2)))
-    layer(x)
-    self.assertEqual(len(layer.get_losses_for(x)), 1)
 
 if __name__ == '__main__':
   test.main()
