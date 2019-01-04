@@ -1,14 +1,14 @@
 apply plugin: 'com.android.application'
 
 android {
-    compileSdkVersion 26
-    buildToolsVersion '26.0.2'
+    compileSdkVersion 28
+    buildToolsVersion '28.0.3'
     defaultConfig {
         applicationId "org.tensorflow.lite.demo"
-        minSdkVersion 15
-        targetSdkVersion 26
+        targetSdkVersion 28
         versionCode 1
         versionName "1.0"
+        minSdkVersion 26
 
     }
     lintOptions {
@@ -45,6 +45,9 @@ project.ext.TMP_DIR   = project.buildDir.toString() + '/downloads'
 apply from: "download-models.gradle"
 
 dependencies {
-    compile fileTree(dir: 'libs', include: ['*.jar'])
-    compile 'org.tensorflow:tensorflow-lite:0.0.0-nightly'
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    implementation 'org.tensorflow:tensorflow-lite:0.0.0-nightly'
+    implementation 'com.android.support:appcompat-v7:28.0.0'
+    implementation "androidx.constraintlayout:constraintlayout:1.1.3"
+    implementation 'org.jetbrains:annotations:15.0'
 }

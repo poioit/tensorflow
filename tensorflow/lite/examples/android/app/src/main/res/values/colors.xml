@@ -16,4 +16,11 @@
 -->
 <resources>
     <color name="control_background">#cc4285f4</color>
+    <color name="colorPrimaryDark">#1F2B40</color>
+    <color name="greyLight">#DCDCDC</color>
+    <color name="greyDark">#3F485B</color>
+    <color name="green">#2E7866</color>
+    <color name="white">#FFFFFF</color>
+    <drawable name="translucent_background">#e0000000</drawable>
+    <drawable name="transparent_background">#00000000</drawable>
 </resources>
