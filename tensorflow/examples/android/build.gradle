@@ -25,10 +25,11 @@ getProject().setBuildDir('gradleBuild')
 buildscript {
     repositories {
         jcenter()
+        google()
     }
 
     dependencies {
-        classpath 'com.android.tools.build:gradle:3.0.1'
+        classpath 'com.android.tools.build:gradle:3.2.1'
         classpath 'org.apache.httpcomponents:httpclient:4.5.4'
     }
 }
@@ -36,6 +37,7 @@ buildscript {
 allprojects {
     repositories {
         jcenter()
+        google()
     }
 }
 
@@ -77,7 +79,7 @@ apply plugin: 'com.android.application'
 
 android {
     compileSdkVersion 23
-    buildToolsVersion '26.0.2'
+    buildToolsVersion '28.0.3'
 
     if (nativeBuildSystem == 'cmake') {
         defaultConfig {
@@ -134,6 +136,9 @@ android {
 
         debug.setRoot('build-types/debug')
         release.setRoot('build-types/release')
+    }
+    defaultConfig {
+        minSdkVersion = 21
     }
 }
 
