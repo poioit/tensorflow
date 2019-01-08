@@ -130,9 +130,9 @@ public class VideoDetectorActivity extends AppCompatActivity {
 
     private static final boolean SAVE_PREVIEW_BITMAP = false;
     private static final float TEXT_SIZE_DIP = 10;
-    private long regularPollingTime = 0;
+    private long regularPollingTime = 30;
     private long initialPollingTime = 200L;
-    private long retryPollingTime = 50L;
+    private long retryPollingTime = 20L;
     private boolean stopPlaying = false;
 
     private Integer sensorOrientation;
@@ -253,12 +253,12 @@ public class VideoDetectorActivity extends AppCompatActivity {
             if( computingDetection )
             {
                 Log.i("hank_debug", "re-entrance skip");
-                trackingOverlay.postInvalidate();
+                //trackingOverlay.postInvalidate();
                 mHandlerTime.postDelayed(this, retryPollingTime);
 
                 return;
             }
-            Log.i( "hank_debug", " " + videoView.isPlaying());
+            //Log.i( "hank_debug", " " + videoView.isPlaying());
             if( stopPlaying) {
                 final List<Classifier.Recognition> mappedRecognitions =
                         new LinkedList<Classifier.Recognition>();
@@ -271,29 +271,17 @@ public class VideoDetectorActivity extends AppCompatActivity {
             computingDetection = true;
             ++nTime; // 經過的秒數 + 1
             long currentPosition = videoView.getCurrentPosition();
-            byte[] originalLuminance = getLuminance();
+            //byte[] originalLuminance = getLuminance();
 
 
             //unit in microsecond
-            Bitmap bmFrame = mediaMetadataRetriever.getFrameAtTime((currentPosition) * 1000, MediaMetadataRetriever.OPTION_CLOSEST);
-            int width = bmFrame.getWidth();
-            int height = bmFrame.getHeight();
+            Bitmap bmFrame = mediaMetadataRetriever.getFrameAtTime((currentPosition) * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
 
-            int size = bmFrame.getRowBytes() * bmFrame.getHeight();
-            ByteBuffer byteBuffer = ByteBuffer.allocate(size);
-            bmFrame.copyPixelsToBuffer(byteBuffer);
-            byte[] byteArray = byteBuffer.array();
-            tracker.onFrame(
-                    previewWidth,
-                    previewHeight,
-                    getLuminanceStride(),
-                    0,
-                    byteArray,
-                    timestamp);
-            trackingOverlay.postInvalidate();
             Log.i( "hank_debug", "pos:" + currentPosition);
             if (bmFrame == null) {
-                Toast.makeText(VideoDetectorActivity.this, "bmFrame == null!", Toast.LENGTH_LONG).show();
+                if(isDebug()) {
+                    Toast.makeText(VideoDetectorActivity.this, "bmFrame == null!", Toast.LENGTH_LONG).show();
+                }
                 mHandlerTime.postDelayed(this, 100);
                 computingDetection = false;
             } else {
@@ -302,9 +290,25 @@ public class VideoDetectorActivity extends AppCompatActivity {
                 //capturedImageView.setImageBitmap(bmFrame)
 
                 try {
+                    /*
+                    int width = bmFrame.getWidth();
+                    int height = bmFrame.getHeight();
 
+                    int size = bmFrame.getRowBytes() * bmFrame.getHeight();
+                    ByteBuffer byteBuffer = ByteBuffer.allocate(size);
+                    bmFrame.copyPixelsToBuffer(byteBuffer);
+                    byte[] byteArray = byteBuffer.array();
+
+                    tracker.onFrame(
+                            previewWidth,
+                            previewHeight,
+                            getLuminanceStride(),
+                            0,
+                            byteArray,
+                            timestamp);
+                    trackingOverlay.postInvalidate();*/
                     bmFrame = Bitmap.createScaledBitmap(bmFrame, TF_OD_API_INPUT_SIZE, TF_OD_API_INPUT_SIZE, false);
-                    if(0==1)
+                    if(isDebug())
                     {//show image for debug
                         AlertDialog.Builder myCaptureDialog =
                                 new AlertDialog.Builder(VideoDetectorActivity.this);
@@ -325,58 +329,55 @@ public class VideoDetectorActivity extends AppCompatActivity {
                         wmlp.y = 300;
                         dialog.show();
                     }
-                    Bitmap finalBmFrame = bmFrame;
-                    runInBackground(
-                            new Runnable() {
-                                @Override
-                                public void run() {
-                                    final long startTime = SystemClock.uptimeMillis();
-                                    final List<Classifier.Recognition> results = detector.recognizeImage(finalBmFrame);
-                                    lastProcessingTimeMs = SystemClock.uptimeMillis() - startTime;
+                    final long startTime = SystemClock.uptimeMillis();
+                    final List<Classifier.Recognition> results = detector.recognizeImage(bmFrame);
+                    lastProcessingTimeMs = SystemClock.uptimeMillis() - startTime;
 
-                                    cropCopyBitmap = Bitmap.createBitmap(croppedBitmap);
-                                    final Canvas canvas = new Canvas(cropCopyBitmap);
-                                    final Paint paint = new Paint();
-                                    paint.setColor(Color.RED);
-                                    paint.setStyle(Style.STROKE);
-                                    paint.setStrokeWidth(2.0f);
+                    cropCopyBitmap = Bitmap.createBitmap(croppedBitmap);
+                    if( isDebug()) {
+                        final Canvas canvas = new Canvas(cropCopyBitmap);
+                        final Paint paint = new Paint();
+                        paint.setColor(Color.RED);
+                        paint.setStyle(Style.STROKE);
+                        paint.setStrokeWidth(2.0f);
+                    }
 
 
-                                    final List<Classifier.Recognition> mappedRecognitions =
-                                            new LinkedList<Classifier.Recognition>();
+                    final List<Classifier.Recognition> mappedRecognitions =
+                            new LinkedList<Classifier.Recognition>();
 
-                                    for (final Classifier.Recognition result : results) {
-                                        final RectF location = result.getLocation();
-                                        //Log.i("hank_confidence:", result.getConfidence().toString());
-                                        if (location != null && result.getConfidence() >= MINIMUM_CONFIDENCE_TF_OD_API) {
-                                            //adjust the rectangle location
-                                            float tmp = location.top;
-                                            float shift = 17;
-                                            location.top = location.top>shift?location.top-shift:0;
-                                            location.bottom = location.bottom>shift?location.bottom-shift:location.bottom-tmp;
-                                            Log.i( "hank_debug", "b:" + location.bottom + " t:" + location.top);
-                                            canvas.drawRect(location, paint);
+                    for (final Classifier.Recognition result : results) {
+                        final RectF location = result.getLocation();
+                        //Log.i("hank_confidence:", result.getConfidence().toString());
+                        if (location != null && result.getConfidence() >= MINIMUM_CONFIDENCE_TF_OD_API) {
+                            //adjust the rectangle location
+                            float tmp = location.top;
+                            float shift = 17;
+                            location.top = location.top>shift?location.top-shift:0;
+                            location.bottom = location.bottom>shift?location.bottom-shift:location.bottom-tmp;
+                            //Log.i( "hank_debug", "b:" + location.bottom + " t:" + location.top);
+                            //canvas.drawRect(location, paint);
 
-                                            cropToFrameTransform.mapRect(location);
-                                            result.setLocation(location);
-                                            mappedRecognitions.add(result);
-                                        }
-                                    }
+                            cropToFrameTransform.mapRect(location);
+                            result.setLocation(location);
+                            mappedRecognitions.add(result);
+                        }
+                    }
 
-                                    tracker.trackResults(mappedRecognitions, luminanceCopy, currentPosition);
-                                    trackingOverlay.postInvalidate();
+                    tracker.trackResults(mappedRecognitions, luminanceCopy, currentPosition);
+                    trackingOverlay.postInvalidate();
+                    if( isDebug()) {
+                        requestRender();
+                    }
+                    mHandlerTime.postDelayed(timerRun, regularPollingTime);
+                    computingDetection = false;
 
-                                    requestRender();
-                                    //mHandlerTime.postDelayed(this, regularPollingTime);
-                                    computingDetection = false;
-                                }
-                            }
-                    );
 
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
-                mHandlerTime.postDelayed(this, regularPollingTime);
+
+
                 //val capturedImageViewLayoutParams = android.app.ActionBar.LayoutParams(android.app.ActionBar.LayoutParams.WRAP_CONTENT, android.app.ActionBar.LayoutParams.WRAP_CONTENT)
                 //capturedImageView.setLayoutParams(capturedImageViewLayoutParams)
 
@@ -516,7 +517,7 @@ public class VideoDetectorActivity extends AppCompatActivity {
                 new DrawCallback() {
                     @Override
                     public void drawCallback(final Canvas canvas) {
-                        Log.i( "hank_debug", "draw overlay");
+                        //Log.i( "hank_debug", "draw overlay");
                         tracker.draw(canvas);
                         if (isDebug()) {
                             tracker.drawDebug(canvas);
